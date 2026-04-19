@@ -77,10 +77,70 @@ Managed via `uv` - see `pyproject.toml` and `uv.lock`
 2. Follow tier1_alert_flow.md structure
 3. Include specific commands and checks
 
-## Future Improvements
+## Future Improvements ✅ EXPANDED (v0.2.0)
 
-- [ ] Domain enrichment script
-- [ ] User context lookup script
-- [ ] Hash reputation lookup
-- [ ] Automated IOC extraction
-- [ ] Integration with MISP/STIX
+- [x] **Domain enrichment script** - `enrichment/domain_lookup.py`
+  - DNS record lookup
+  - WHOIS (simulated)
+  - Reputation check
+  - Suspicious pattern detection (DGA, long random subdomains)
+- [x] **User context lookup script** - `enrichment/user_lookup.py`
+  - Account info (type, department, enabled)
+  - Recent activity (logons, failed logons)
+  - Group membership
+  - Risk score calculation
+- [x] **Hash reputation lookup** - `enrichment/hash_lookup.py`
+  - MD5/SHA1/SHA256 detection
+  - Known malicious/benign database
+  - VirusTotal simulation
+  - File info
+- [x] **Automated IOC extraction** - `enrichment/ioc_extract.py`
+  - IP/Domain/Hash/URL/Email/FilePath extraction
+  - Regex patterns for common IOCs
+- [x] **Unified enrichment CLI** - `enrichment/__main__.py`
+  - `enrich ip <target>`
+  - `enrich domain <target>`
+  - `enrich hash <target>`
+  - `enrich user <target>`
+  - `enrich all <auto-detect>`
+- [x] **Additional Runbooks**
+  - `runbooks/tier2_phishing_alert.md` - Phishing handling
+  - `runbooks/tier3_malware_alert.md` - Malware/Ransomware
+
+## Current Enrichment Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `ip_lookup.py` | IP enrichment (DNS, GeoIP, private check) |
+| `domain_lookup.py` | Domain enrichment (WHOIS, reputation, DGA) |
+| `hash_lookup.py` | Hash reputation (VT, known malware) |
+| `user_lookup.py` | User context (activity, groups, risk) |
+| `ioc_extract.py` | Auto-extract IOCs from text |
+| `__main__.py` | Unified CLI (`python -m enrichment`) |
+
+## Live Integration (v0.3.0) ✅ NEW
+
+### Live Modules
+
+| Module | Description |
+|--------|-------------|
+| `live/siem_collector.py` | Fetch alerts from Splunk/Elasticsearch |
+| `live/ticket_creator.py` | Create tickets in Jira/ServiceNow |
+| `live/feed_poller.py` | Poll VirusTotal, AbuseIPDB, AlienVault OTX |
+| `live/__main__.py` | Live CLI (`python -m live`) |
+
+### Live CLI Commands
+
+```bash
+# Fetch SIEM alerts
+python -m live siem --hours 1 --limit 10
+
+# Create ticket
+python -m live ticket "Alert summary" --priority high
+
+# Check IOC against threat feeds
+python -m live check 192.168.1.100 --feeds virustotal,abuseipdb
+
+# Full triage workflow
+python -m live triage alert.json --ticket
+```

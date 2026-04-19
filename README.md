@@ -1,65 +1,226 @@
 # AlertFlow
 
-A standardized alert triage workflow for SOC Tier 1 analysts. AlertFlow provides structured runbooks, templates, and enrichment tools for consistent alert handling and clean ticket handoffs.
+**Standardized SOC Alert Triage Workflow** - A complete toolkit for Tier 1 analysts.
+
+---
+
+## For SOC Analysts
+
+A production-ready alert handling system with:
+- **5-Phase Workflow**: REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE
+- **Enrichment Tools**: IP, domain, hash, user investigation
+- **Runbooks**: Phishing, malware, ransomware procedures
+- **Live Integration**: SIEM queries, ticketing, threat feeds
+
+## For Interviews / Portfolio
+
+> "AlertFlow is my standardized alert triage system. It ensures every alert gets consistent, documented handling with full enrichment and clean handoffs to Tier 2."
+
+**Key Skills Demonstrated:**
+- SOC workflow understanding
+- CLI tool development (Python/Typer)
+- API integration patterns
+- Documentation for operations
+- Realistic simulation of analyst tasks
+
+---
+
+## Quick Demo
+
+```bash
+cd projects/alertflow
+uv sync
+
+# Demo workflow (no setup needed)
+uv run python scripts/demo.py
+```
+
+---
 
 ## Features
 
-- **Tier 1 Workflow** - Structured REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE process
-- **Runbook System** - Detailed step-by-step procedures for each triage phase
-- **Standardized Templates** - Complete ticket format with all required fields
-- **Enrichment Tools** - IP investigation CLI for context gathering
-- **Escalation Criteria** - Clear severity matrix and escalation guidelines
+### Enrichment Tools
+- **IP Lookup**: Reverse DNS, GeoIP, private IP detection
+- **Domain Lookup**: WHOIS, suspicious patterns, reputation
+- **Hash Lookup**: MD5/SHA256 reputation check
+- **User Lookup**: Account info, activity, risk scoring
+- **IOC Extract**: Auto-extract IOCs from alert text
 
-## Quick Start
+### Runbooks
+- **Tier 1 Alert Flow** - General alert handling
+- **Phishing Alert** - Email investigation
+- **Malware Alert** - Detection response
 
+### Live Integration
+- **SIEM Connector**: Splunk/Elasticsearch queries
+- **Ticketing**: Jira/ServiceNow integration
+- **Threat Feeds**: VirusTotal, AbuseIPDB, AlienVault OTX
+
+---
+
+## Usage Examples
+
+### Enrichment (Offline)
 ```bash
-# IP enrichment
-python enrichment/ip_lookup.py 192.168.1.1
+# IP investigation
+uv run python enrichment/ip_lookup.py 192.168.1.100
 
-# Use ticket template from templates/ticket_template.md
-# Reference runbooks/tier1_alert_flow.md for procedures
+# Domain reputation
+uv run python enrichment/domain_lookup.py suspicious-domain.xyz
+
+# Hash check
+uv run python enrichment/hash_lookup.py aadea647deadbeef...
+
+# User context
+uv run python enrichment/user_lookup.py admin
+
+# Auto-detect IOC type
+uv run python enrichment/all 192.168.1.1
 ```
 
-## Workflow Phases
+### Live Integration
+```bash
+# Fetch recent SIEM alerts
+uv run python -m live siem --hours 1 --limit 10
 
-| Phase | Target Time | Key Actions |
-|-------|------------|-------------|
-| Review | 2 min | Confirm alert, check severity |
-| Validate | 5 min | False positive check |
-| Enrich | 10 min | Gather context (IP, user, asset) |
-| Document | 5 min | Complete ticket |
-| **Total** | **~22 min** | Per alert |
+# Check IOC against threat feeds
+uv run python -m live check 192.168.1.1 --feeds abuseipdb,virustotal
+
+# Create ticket
+uv run python -m live ticket "Alert title" --priority critical
+```
+
+### Full Triage
+```bash
+# Example: triage an alert file
+uv run python -m live triage alert.json --ticket
+```
+
+---
+
+## Workflow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    AlertFlow                               │
+├─────────────┬─────────────┬─────────────┬─────────────────┤
+│   REVIEW    │  VALIDATE  │   ENRICH    │   DOCUMENT     │
+│ 2 minutes  │  5 minutes │ 10 minutes  │   5 minutes    │
+├─────────────┴─────────────┴─────────────┴─────────────────┤
+│  - Confirm    - Check FP    - IP/Domain   - Timeline      │
+│  - Severity   - Allowlist   - Hash/User   - IOCs            │
+│  - Categorize - Baseline   - Threat Feeds- Evidence        │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                    ┌─────┴───��─┐
+                    │ ESCALATE  │
+                    │  Close   │
+                    └──────────┘
+```
+
+---
 
 ## Escalation Criteria
 
-| Severity | Trigger |
-|----------|----------|
-| **P1 - Immediate** | Active compromise, data exfil, malware, lateral movement |
-| **P2 - Urgent** | Failed login burst, unauthorized account, privilege escalation |
-| **P3 - Standard** | Single failed login, minor policy violation |
-| **Close** | Confirmed FP, known maintenance, user authorized |
+| Severity | Definition | Example |
+|----------|------------|---------|
+| **P1** | Active compromise | Malware, lateral movement, data exfil |
+| **P2** | Suspected compromise | Failed logins burst, privilege escalation |
+| **P3** | Suspicious activity | Single failed login, policy violation |
+| **Close** | False positive | Maintenance, authorized user |
+
+---
 
 ## Project Structure
 
 ```
 alertflow/
-├── runbooks/           # Detailed procedures
-├── templates/          # Ticket templates
-├── checklists/        # Quick reference
-└── enrichment/       # Investigation tools
+├── enrichment/         # Offline enrichment tools (6 scripts)
+│   ├── ip_lookup.py
+│   ├── domain_lookup.py
+│   ├── hash_lookup.py
+│   ├── user_lookup.py
+│   ├── ioc_extract.py
+│   └── __main__.py     # Unified CLI
+├── live/              # Live integration (4 scripts)
+│   ├── siem_collector.py
+│   ├── ticket_creator.py
+│   ├── feed_poller.py
+│   └── __main__.py
+├── runbooks/          # Alert handling procedures
+│   ├── tier1_alert_flow.md
+│   ├── tier2_phishing_alert.md
+│   └── tier3_malware_alert.md
+├── templates/         # Ticket templates
+├── checklists/        # Quick references
+├── scripts/
+│   └── demo.py       # Demo workflow
+└── docs/
+    └── INTEGRATION.md  # ThreatPulse integration plan
 ```
 
-## Components
+---
 
-- **tier1_alert_flow.md** - Complete runbook with commands and checks
-- **ticket_template.md** - Standardized ticket format
-- **triage_checklist.md** - Quick reference checklist
-- **ip_lookup.py** - IP enrichment CLI tool
+## Dependencies
 
-## Usage in Operations
+| Package | Purpose |
+|---------|---------|
+| `typer` | CLI framework |
+| `rich` | Terminal UI |
+| `httpx` | HTTP client |
+| `requests` | API calls |
 
-1. Use `templates/ticket_template.md` when creating new tickets
-2. Follow procedures in `runbooks/tier1_alert_flow.md`
-3. Reference checklists during triage
-4. Use enrichment scripts for context
-5. Apply escalation criteria when determining disposition
+---
+
+## Demo Recording
+
+Record a demo with asciinema:
+
+```bash
+# Install asciinema
+brew install asciinema  # or: pip install asciinema
+
+# Record demo
+asciinema rec alertflow-demo.cast
+
+# Playback
+asciinema play alertflow-demo.cast
+```
+
+Or run the automated demo:
+
+```bash
+uv run python scripts/demo.py
+```
+
+---
+
+## Tech Stack
+
+- **Python 3.11+**
+- **Typer** - CLI
+- **Rich** - Terminal UI
+- **HTTPX** - API client
+- **SQLite** option for persistence
+
+---
+
+## For Technical Interviews
+
+**Q: How does alert triage work in production?**
+
+> "I follow a structured 5-phase workflow. First I Review the alert to understand what's triggered and confirm severity. Then Validate against known baselines to rule out false positives. Next I Enrich with context - IP reputation, user activity, threat intel. Then Document everything in the ticket with timeline and IOCs. Finally, Escalate or Close based on clear criteria."
+
+**Q: How do you handle phishing alerts?**
+
+> "We have a dedicated runbook for that. We analyze the email headers, check sender domain reputation, scan links through urlscan.io (never click!), analyze attachments in sandbox, and measure impact by checking for other recipients. Then block sender, remove from mailboxes, and reset credentials if clicked."
+
+**Q: How do you enrich IOCs?**
+
+> "I built a CLI toolkit that can query multiple sources - VirusTotal for hashes, AbuseIPDB for IPs, direct WHOIS for domains, and LDAP for user context. The tool auto-detects IOC type and enriches with available context in one command."
+
+---
+
+## License
+
+MIT
