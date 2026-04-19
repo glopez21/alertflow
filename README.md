@@ -109,8 +109,8 @@ uv run python -m live triage alert.json --ticket
 │  - Categorize - Baseline   - Threat Feeds- Evidence       │
 └───────────────────────────────────────────────────────────┘
                           │
-                    ┌─────┴───��─┐
-                    │ ESCALATE  │
+                    ┌─────┴────┐
+                    │ ESCALATE │
                     │  Close   │
                     └──────────┘
 ```
