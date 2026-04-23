@@ -200,6 +200,30 @@ uv run python scripts/demo.py
 - **HTTPX** - API client
 - **SQLite** option for persistence
 
+---
+
+## Portfolio Description
+
+**Standardized alert triage workflow system for Tier 1 SOC operations**
+
+I built AlertFlow to understand the structured approach required for consistent, efficient alert handling. It implements the 5-phase triage workflow used in production SOCs—ensuring every alert gets proper validation, enrichment, and documentation.
+
+**What it demonstrates:**
+- **SOC workflow understanding** - I know the standard alert handling process (REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE)
+- **Enrichment capability** - I can investigate IOCs using multiple sources (IP reputation, domain analysis, hash checking)
+- **Documentation skills** - I understand the importance of timeline tracking and evidence preservation
+- **False positive handling** - I know how to identify and properly close FP alerts with documentation
+
+**Conversation starter for interviews:**
+> "AlertFlow is my standardized alert triage system. I built it to ensure I follow consistent handling procedures for every alert—never missing enrichment steps or skipping documentation. Every alert gets validated, enriched with available context, and properly closed with reasoning. This is how I ensure clean handoffs to Tier 2."
+
+**Technical details I can discuss:**
+- Why structured workflows reduce missed indicators
+- How to enrich IOCs (VirusTotal, AbuseIPDB, WHOIS)
+- False positive identification patterns
+- Proper escalation criteria and handoff documentation
+
+---
 
 ## License
 
