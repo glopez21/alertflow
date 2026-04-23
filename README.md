@@ -12,9 +12,6 @@ A production-ready alert handling system with:
 - **Runbooks**: Phishing, malware, ransomware procedures
 - **Live Integration**: SIEM queries, ticketing, threat feeds
 
-## For Interviews / Portfolio
-
-> "AlertFlow is my standardized alert triage system. It ensures every alert gets consistent, documented handling with full enrichment and clean handoffs to Tier 2."
 
 **Key Skills Demonstrated:**
 - SOC workflow understanding
@@ -101,19 +98,19 @@ uv run python -m live triage alert.json --ticket
 ## Workflow
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    AlertFlow                               │
+┌───────────────────────────────────────────────────────────┐
+│                    AlertFlow                              │
 ├─────────────┬─────────────┬─────────────┬─────────────────┤
-│   REVIEW    │  VALIDATE  │   ENRICH    │   DOCUMENT     │
-│ 2 minutes  │  5 minutes │ 10 minutes  │   5 minutes    │
+│   REVIEW    │   VALIDATE  │   ENRICH    │   DOCUMENT      │
+│ 2 minutes   │   5 minutes │ 10 minutes  │   5 minutes     │
 ├─────────────┴─────────────┴─────────────┴─────────────────┤
 │  - Confirm    - Check FP    - IP/Domain   - Timeline      │
-│  - Severity   - Allowlist   - Hash/User   - IOCs            │
-│  - Categorize - Baseline   - Threat Feeds- Evidence        │
-└─────────────────────────────────────────────────────────────┘
+│  - Severity   - Allowlist   - Hash/User   - IOCs          │
+│  - Categorize - Baseline   - Threat Feeds- Evidence       │
+└───────────────────────────────────────────────────────────┘
                           │
-                    ┌─────┴───��─┐
-                    │ ESCALATE  │
+                    ┌─────┴────┐
+                    │ ESCALATE │
                     │  Close   │
                     └──────────┘
 ```
@@ -203,23 +200,6 @@ uv run python scripts/demo.py
 - **HTTPX** - API client
 - **SQLite** option for persistence
 
----
-
-## For Technical Interviews
-
-**Q: How does alert triage work in production?**
-
-> "I follow a structured 5-phase workflow. First I Review the alert to understand what's triggered and confirm severity. Then Validate against known baselines to rule out false positives. Next I Enrich with context - IP reputation, user activity, threat intel. Then Document everything in the ticket with timeline and IOCs. Finally, Escalate or Close based on clear criteria."
-
-**Q: How do you handle phishing alerts?**
-
-> "We have a dedicated runbook for that. We analyze the email headers, check sender domain reputation, scan links through urlscan.io (never click!), analyze attachments in sandbox, and measure impact by checking for other recipients. Then block sender, remove from mailboxes, and reset credentials if clicked."
-
-**Q: How do you enrich IOCs?**
-
-> "I built a CLI toolkit that can query multiple sources - VirusTotal for hashes, AbuseIPDB for IPs, direct WHOIS for domains, and LDAP for user context. The tool auto-detects IOC type and enriches with available context in one command."
-
----
 
 ## License
 
