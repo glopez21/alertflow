@@ -1,6 +1,14 @@
 # AlertFlow
 
-**Standardized SOC Alert Triage Workflow** - A complete toolkit for Tier 1 analysts.
+**Standardized alert triage workflow system for Tier 1 SOC operations**  - A complete toolkit for Tier 1 analysts.
+
+AlertFlow is my standardized alert triage system.  I built AlertFlow to understand the structured approach required for consistent, efficient alert handling and to ensure I follow consistent handling procedures for every alert—never missing enrichment steps or skipping documentation. Every alert gets validated, enriched with available context, and properly closed with reasoning. . It implements the 5-phase triage workflow used in production SOCs—ensuring every alert gets proper validation, enrichment, and documentation.
+
+**What it demonstrates:**
+- **SOC workflow understanding** - I know the standard alert handling process (REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE)
+- **Enrichment capability** - I can investigate IOCs using multiple sources (IP reputation, domain analysis, hash checking)
+- **Documentation skills** - I understand the importance of timeline tracking and evidence preservation
+- **False positive handling** - I know how to identify and properly close FP alerts with documentation
 
 ---
 
@@ -29,7 +37,7 @@ cd projects/alertflow
 uv sync
 
 # Demo workflow (no setup needed)
-uv run python scripts/demo.py
+uv run scripts/demo.py
 ```
 
 ---
@@ -60,37 +68,37 @@ uv run python scripts/demo.py
 ### Enrichment (Offline)
 ```bash
 # IP investigation
-uv run python enrichment/ip_lookup.py 192.168.1.100
+uv run enrichment/ip_lookup.py 192.168.1.100
 
 # Domain reputation
-uv run python enrichment/domain_lookup.py suspicious-domain.xyz
+uv run enrichment/domain_lookup.py suspicious-domain.xyz
 
 # Hash check
-uv run python enrichment/hash_lookup.py aadea647deadbeef...
+uv run enrichment/hash_lookup.py aadea647deadbeef...
 
 # User context
-uv run python enrichment/user_lookup.py admin
+uv run enrichment/user_lookup.py admin
 
 # Auto-detect IOC type
-uv run python enrichment/all 192.168.1.1
+uv run enrichment/all 192.168.1.1
 ```
 
 ### Live Integration
 ```bash
 # Fetch recent SIEM alerts
-uv run python -m live siem --hours 1 --limit 10
+uv run -m live siem --hours 1 --limit 10
 
 # Check IOC against threat feeds
-uv run python -m live check 192.168.1.1 --feeds abuseipdb,virustotal
+uv run -m live check 192.168.1.1 --feeds abuseipdb,virustotal
 
 # Create ticket
-uv run python -m live ticket "Alert title" --priority critical
+uv run -m live ticket "Alert title" --priority critical
 ```
 
 ### Full Triage
 ```bash
 # Example: triage an alert file
-uv run python -m live triage alert.json --ticket
+uv run -m live triage alert.json --ticket
 ```
 
 ---
@@ -156,8 +164,6 @@ alertflow/
     └── INTEGRATION.md  # ThreatPulse integration plan
 ```
 
----
-
 ## Dependencies
 
 | Package | Purpose |
@@ -169,28 +175,11 @@ alertflow/
 
 ---
 
-## Demo Recording
-
-Record a demo with asciinema:
-
-```bash
-# Install asciinema
-brew install asciinema  # or: pip install asciinema
-
-# Record demo
-asciinema rec alertflow-demo.cast
-
-# Playback
-asciinema play alertflow-demo.cast
-```
-
 Or run the automated demo:
 
 ```bash
 uv run python scripts/demo.py
 ```
-
----
 
 ## Tech Stack
 
@@ -199,29 +188,6 @@ uv run python scripts/demo.py
 - **Rich** - Terminal UI
 - **HTTPX** - API client
 - **SQLite** option for persistence
-
----
-
-## Portfolio Description
-
-**Standardized alert triage workflow system for Tier 1 SOC operations**
-
-I built AlertFlow to understand the structured approach required for consistent, efficient alert handling. It implements the 5-phase triage workflow used in production SOCs—ensuring every alert gets proper validation, enrichment, and documentation.
-
-**What it demonstrates:**
-- **SOC workflow understanding** - I know the standard alert handling process (REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE)
-- **Enrichment capability** - I can investigate IOCs using multiple sources (IP reputation, domain analysis, hash checking)
-- **Documentation skills** - I understand the importance of timeline tracking and evidence preservation
-- **False positive handling** - I know how to identify and properly close FP alerts with documentation
-
-**Conversation starter for interviews:**
-> "AlertFlow is my standardized alert triage system. I built it to ensure I follow consistent handling procedures for every alert—never missing enrichment steps or skipping documentation. Every alert gets validated, enriched with available context, and properly closed with reasoning. This is how I ensure clean handoffs to Tier 2."
-
-**Technical details I can discuss:**
-- Why structured workflows reduce missed indicators
-- How to enrich IOCs (VirusTotal, AbuseIPDB, WHOIS)
-- False positive identification patterns
-- Proper escalation criteria and handoff documentation
 
 ---
 
