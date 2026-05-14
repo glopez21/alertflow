@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,7 +23,7 @@ class SIEMConfig:
     password: str = ""
     api_key: str = ""
     index: str = "security"
-    verify_ssl: bool = False
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -82,10 +83,55 @@ class SplunkCollector:
                 sid = resp.json().get("sid")
                 return self._wait_for_results(sid)
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Splunk search failed: %s", e)
 
         return self._get_sample_alerts()
+
+    def _wait_for_results(self, sid: str, timeout: int = 30) -> list[Alert]:
+        """Wait for Splunk search to complete and fetch results."""
+        import time
+
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                resp = self._client.get(
+                    f"/services/search/jobs/{sid}",
+                    params={"output_mode": "json"},
+                )
+                if resp.status_code == 200:
+                    entries = resp.json().get("entry", [])
+                    if entries:
+                        status = entries[0].get("content", {}).get("dispatchState", "")
+                        if status == "DONE":
+                            results_resp = self._client.get(
+                                f"/services/search/jobs/{sid}/results",
+                                params={"output_mode": "json", "count": 100},
+                            )
+                            if results_resp.status_code == 200:
+                                return [self._parse_result(r) for r in results_resp.json().get("results", [])]
+                        elif status in ("FAILED", "CANCELLED"):
+                            break
+            except Exception:
+                pass
+            time.sleep(1)
+
+        return self._get_sample_alerts()
+
+    def _parse_result(self, result: dict) -> Alert:
+        return Alert(
+            id=result.get("_key", ""),
+            source="splunk",
+            rule_name=result.get("rule_name", "Unknown"),
+            severity=result.get("severity", "medium"),
+            timestamp=result.get("_time", ""),
+            host=result.get("host", ""),
+            user=result.get("user", ""),
+            src_ip=result.get("src_ip", ""),
+            dst_ip=result.get("dst_ip", ""),
+            raw_message=result.get("_raw", ""),
+            raw_data=result,
+        )
 
     def _get_sample_alerts(self) -> list[Alert]:
         return [
@@ -151,8 +197,8 @@ class ElasticsearchCollector:
                 hits = resp.json().get("hits", {}).get("hits", [])
                 return [self._parse_hit(hit) for hit in hits]
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Elasticsearch query failed: %s", e)
 
         return self._sample_alerts()
 

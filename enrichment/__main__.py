@@ -1,14 +1,37 @@
 #!/usr/bin/env python3
 """Unified enrichment CLI for AlertFlow."""
 
-import sys
-from typing import Optional
+import json as json_mod
 
 import typer
 from rich.console import Console
+from rich.table import Table
+
+from utils import detect_ioc_type
 
 app = typer.Typer(name="enrich", help="AlertFlow Enrichment Tools")
 console = Console()
+
+
+def _render_checks_table(title: str, result: dict, console: Console = console):
+    """Render a rich Table from an enrichment result dict."""
+    checks = result.get("checks", {})
+    table = Table(title=title)
+    table.add_column("Check", style="cyan")
+    table.add_column("Result", style="white")
+
+    for check_name, check_value in checks.items():
+        if isinstance(check_value, dict):
+            value = ", ".join(f"{k}: {v}" for k, v in check_value.items())
+        elif isinstance(check_value, list):
+            value = ", ".join(str(v) for v in check_value[:3])
+            if len(check_value) > 3:
+                value += f" (+{len(check_value) - 3} more)"
+        else:
+            value = str(check_value)
+        table.add_row(check_name, value)
+
+    console.print(table)
 
 
 @app.command()
@@ -18,24 +41,9 @@ def ip(address: str, json: bool = typer.Option(False, "--json", help="Output as 
 
     result = enrich_ip(address)
     if json:
-        import json as json_mod
         print(json_mod.dumps(result, indent=2))
     else:
-        from rich.table import Table
-
-        table = Table(title=f"IP Enrichment: {address}")
-        table.add_column("Check", style="cyan")
-        table.add_column("Result", style="white")
-
-        checks = result.get("checks", {})
-        for check_name, check_value in checks.items():
-            if isinstance(check_value, dict):
-                value = ", ".join(f"{k}: {v}" for k, v in check_value.items())
-            else:
-                value = str(check_value)
-            table.add_row(check_name, value)
-
-        console.print(table)
+        _render_checks_table(f"IP Enrichment: {address}", result)
 
 
 @app.command()
@@ -45,28 +53,9 @@ def domain(address: str, json: bool = typer.Option(False, "--json", help="Output
 
     result = enrich_domain(address)
     if json:
-        import json as json_mod
         print(json_mod.dumps(result, indent=2))
     else:
-        from rich.table import Table
-
-        table = Table(title=f"Domain Enrichment: {address}")
-        table.add_column("Check", style="cyan")
-        table.add_column("Result", style="white")
-
-        checks = result.get("checks", {})
-        for check_name, check_value in checks.items():
-            if isinstance(check_value, dict):
-                value = ", ".join(f"{k}: {v}" for k, v in check_value.items())
-            elif isinstance(check_value, list):
-                value = ", ".join(str(v) for v in check_value[:3])
-                if len(check_value) > 3:
-                    value += f" (+{len(check_value)-3} more)"
-            else:
-                value = str(check_value)
-            table.add_row(check_name, value)
-
-        console.print(table)
+        _render_checks_table(f"Domain Enrichment: {address}", result)
 
 
 @app.command()
@@ -75,20 +64,11 @@ def hash(file_hash: str, json: bool = typer.Option(False, "--json", help="Output
     from enrichment.hash_lookup import enrich_hash
 
     result = enrich_hash(file_hash)
-    table = Table(title=f"Hash Lookup: {file_hash[:16]}...")
-    table.add_column("Check", style="cyan")
-    table.add_column("Result", style="white")
-
-    checks = result.get("checks", {})
-    for check_name, check_value in checks.items():
-        if isinstance(check_value, dict):
-            value = ", ".join(f"{k}: {v}" for k, v in check_value.items())
-        else:
-            value = str(check_value)
-        table.add_row(check_name, value)
-
-    console.print(table)
-    console.print(f"[dim]Hash type: {result.get('hash_type', 'unknown')}[/dim]")
+    if json:
+        print(json_mod.dumps(result, indent=2))
+    else:
+        _render_checks_table(f"Hash Lookup: {file_hash[:16]}...", result)
+        console.print(f"[dim]Hash type: {result.get('hash_type', 'unknown')}[/dim]")
 
 
 @app.command()
@@ -99,11 +79,8 @@ def user(username: str, json: bool = typer.Option(False, "--json", help="Output 
     result = enrich_user(username)
 
     if json:
-        import json as json_mod
         print(json_mod.dumps(result, indent=2))
     else:
-        from rich.table import Table
-
         account = result.get("checks", {}).get("account_info", {})
         table = Table(title=f"User Context: {username}")
         table.add_column("Field", style="cyan")
@@ -112,6 +89,7 @@ def user(username: str, json: bool = typer.Option(False, "--json", help="Output 
         table.add_row("Account Type", account.get("account_type", "unknown"))
         table.add_row("Enabled", str(account.get("enabled", "unknown")))
         table.add_row("Department", account.get("department", "unknown"))
+        table.add_row("Last Password Change", account.get("last_password_change", "unknown"))
 
         activity = result.get("checks", {}).get("recent_activity", {})
         table.add_row("Logons Today", str(activity.get("logons_today", 0)))
@@ -127,61 +105,30 @@ def user(username: str, json: bool = typer.Option(False, "--json", help="Output 
         console.print(table)
 
 
-@app.command()
-def all(target: str, json: bool = typer.Option(False, "--json", help="Output as JSON")):
+@app.command("all")
+def enrich_all(target: str, json: bool = typer.Option(False, "--json", help="Output as JSON")):
     """Auto-detect and enrich any IOC (IP, domain, hash, or user)."""
-    import json as json_mod
+    from pipeline import enrich_target
 
-    if "@" in target:
-        target_type = "email"
-    elif target.count(".") >= 1 and not target.replace(".", "").replace("-", "").isdigit():
-        target_type = "domain"
-    elif ":" in target:
-        target_type = "url"
-    elif target.replace("-", "").replace(":", "").isalnum() and len(target) in (32, 40, 64, 128):
-        target_type = "hash"
-    elif target.count(".") == 3 and all(part.isdigit() for part in target.split(".")):
-        target_type = "ip"
-    else:
-        target_type = "unknown"
-
+    target_type = detect_ioc_type(target)
     console.print(f"[cyan]Auto-detected type:[/cyan] {target_type}")
 
-    if target_type == "ip":
-        from enrichment.ip_lookup import enrich_ip
-        result = enrich_ip(target)
-    elif target_type == "domain":
-        from enrichment.domain_lookup import enrich_domain
-        result = enrich_domain(target)
-    elif target_type == "hash":
-        from enrichment.hash_lookup import enrich_hash
-        result = enrich_hash(target)
+    if target_type in ("ip", "domain", "hash", "user", "email"):
+        if target_type == "email":
+            result = enrich_target(target, "email")
+        else:
+            result = enrich_target(target, target_type)
+    elif target_type == "url":
+        from enrichment.ioc_extract import extract_iocs
+        result = extract_iocs(target)
     else:
         console.print(f"[red]Unknown IOC type for: {target}[/red]")
-        sys.exit(1)
+        raise SystemExit(1)
 
     if json:
         print(json_mod.dumps(result, indent=2))
     else:
-        from rich.table import Table
-
-        table = Table(title=f"Enrichment: {target}")
-        table.add_column("Check", style="cyan")
-        table.add_column("Result", style="white")
-
-        checks = result.get("checks", {})
-        for check_name, check_value in checks.items():
-            if isinstance(check_value, dict):
-                value = ", ".join(f"{k}: {v}" for k, v in check_value.items())
-            elif isinstance(check_value, list):
-                value = ", ".join(str(v) for v in check_value[:3])
-                if len(check_value) > 3:
-                    value += f" (+{len(check_value)-3} more)"
-            else:
-                value = str(check_value)
-            table.add_row(check_name, value)
-
-        console.print(table)
+        _render_checks_table(f"Enrichment: {target}", result)
 
 
 if __name__ == "__main__":

@@ -4,8 +4,7 @@
 import argparse
 import json
 import re
-from datetime import datetime
-from typing import Any, List, Set
+from typing import List
 
 
 def extract_iocs(alert_text: str) -> dict:
@@ -72,7 +71,7 @@ def extract_emails(text: str) -> List[str]:
 
 def extract_filepaths(text: str) -> List[str]:
     """Extract file paths."""
-    windows_pattern = r"[A-Za-z]:\\[^\s<>'\"{}|\\^`\[\]]+"
+    windows_pattern = r"[A-Za-z]:(?:\\[^\s<>'\"{}|\\^`\[\]]+)+"
     unix_pattern = r"(?:/home/|/var/|/etc/|/usr/|/tmp/)[^\s<>'\"{}|\\^`\[\]]+"
 
     paths = list(set(re.findall(windows_pattern, text)))

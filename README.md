@@ -160,8 +160,8 @@ alertflow/
 ├── checklists/        # Quick references
 ├── scripts/
 │   └── demo.py       # Demo workflow
-└── docs/
-    └── INTEGRATION.md  # ThreatPulse integration plan
+├── ISSUES.md         # Bug tracking & roadmap
+└── dev_notes.md      # Development notes
 ```
 
 ## Dependencies
@@ -171,7 +171,6 @@ alertflow/
 | `typer` | CLI framework |
 | `rich` | Terminal UI |
 | `httpx` | HTTP client |
-| `requests` | API calls |
 
 ---
 

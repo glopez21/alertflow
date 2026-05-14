@@ -5,17 +5,16 @@ import argparse
 import json
 import re
 import socket
-import subprocess
-import sys
-from datetime import datetime
-from typing import Any, Optional
+import warnings
+
+from utils import utcnow_iso
 
 
 def enrich_domain(domain: str) -> dict:
     """Enrich domain with available context."""
     result = {
         "domain": domain,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": utcnow_iso(),
         "checks": {},
     }
 
@@ -43,7 +42,7 @@ def get_dns_records(domain: str) -> dict:
         pass
 
     try:
-        import dns.resolver
+        import dns.resolver  # type: ignore[import-untyped]
         for record_type in ["MX", "NS", "TXT", "CNAME"]:
             try:
                 answers = dns.resolver.resolve(domain, record_type)
@@ -52,7 +51,7 @@ def get_dns_records(domain: str) -> dict:
             except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
                 pass
     except ImportError:
-        pass
+        warnings.warn("dnspython not installed — advanced DNS records unavailable (install with: uv add dnspython)")
 
     return records
 

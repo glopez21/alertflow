@@ -4,9 +4,8 @@
 import argparse
 import json
 import re
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
+
+from utils import utcnow_iso
 
 
 def enrich_hash(hash_value: str) -> dict:
@@ -14,7 +13,7 @@ def enrich_hash(hash_value: str) -> dict:
     result = {
         "hash": hash_value,
         "hash_type": detect_hash_type(hash_value),
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": utcnow_iso(),
         "checks": {},
     }
 
@@ -27,11 +26,7 @@ def enrich_hash(hash_value: str) -> dict:
 
 def detect_hash_type(hash_value: str) -> str:
     """Detect hash type based on length."""
-    length = len(hash_value)
-
     if re.match(r"^[a-fA-F0-9]{32}$", hash_value):
-        return "md5"
-    elif re.match(r"^[a-fA-F0-9]{32}$", hash_value):
         return "md5"
     elif re.match(r"^[a-fA-F0-9]{40}$", hash_value):
         return "sha1"
@@ -58,8 +53,8 @@ def check_reputation(hash_value: str) -> dict:
         return malicious_patterns[hash_prefix]
 
     benign_patterns = {
-        "e3b0c44": {"name": "windows_system32", "reputation": "benign"},
-        "d41d8cd": {"name": "empty_file", "reputation": "benign"},
+        "e3b0c442": {"name": "windows_system32", "reputation": "benign"},
+        "d41d8cd9": {"name": "empty_file", "reputation": "benign"},
     }
 
     if hash_prefix in benign_patterns:

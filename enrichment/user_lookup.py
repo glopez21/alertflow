@@ -3,16 +3,17 @@
 
 import argparse
 import json
-import os
-from datetime import datetime, timedelta
-from typing import Optional
+
+from datetime import datetime
+
+from utils import utcnow_iso
 
 
 def enrich_user(username: str) -> dict:
     """Enrich user with available context."""
     result = {
         "username": username,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": utcnow_iso(),
         "checks": {},
     }
 
@@ -158,16 +159,15 @@ def calculate_risk_score(username: str) -> dict:
     if groups.get("privileged"):
         risk_factors.append("Privileged group membership")
 
-    days_since_change = 90
     try:
         last_change = account.get("last_password_change", "unknown")
         if last_change != "unknown":
-            days_since_change = 90
-    except Exception:
+            last_change_date = datetime.strptime(last_change, "%Y-%m-%d")
+            days_since_change = (datetime.utcnow() - last_change_date).days
+            if days_since_change > 90:
+                risk_factors.append(f"Password not changed in {days_since_change} days")
+    except (ValueError, TypeError):
         pass
-
-    if days_since_change > 90:
-        risk_factors.append("Old password")
 
     score = min(len(risk_factors) * 25, 100)
 

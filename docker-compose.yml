@@ -1,0 +1,36 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - alertflow-data:/data
+    environment:
+      - ALERTFLOW_DB=/data/alertflow.db
+      - ALERTFLOW_API_KEY=${ALERTFLOW_API_KEY:-}
+      - ALERTFLOW_CORS_ORIGINS=${ALERTFLOW_CORS_ORIGINS:-*}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  cli:
+    build: .
+    volumes:
+      - alertflow-data:/data
+      - ./alerts:/alerts:ro
+    environment:
+      - ALERTFLOW_DB=/data/alertflow.db
+      - THREATPULSE_URL=${THREATPULSE_URL:-}
+      - THREATPULSE_API_KEY=${THREATPULSE_API_KEY:-}
+      - ADMINFLOW_URL=${ADMINFLOW_URL:-}
+      - ADMINFLOW_API_KEY=${ADMINFLOW_API_KEY:-}
+    entrypoint: ["python", "-m", "main"]
+    profiles:
+      - cli
+
+volumes:
+  alertflow-data:

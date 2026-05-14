@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Live integration CLI for AlertFlow."""
 
-import sys
 from typing import Optional
 
 import typer
@@ -20,7 +19,7 @@ def siem(
     config_file: Optional[str] = typer.Option(None, "--config", "-c", help="SIEM config file"),
 ) -> None:
     """Fetch alerts from SIEM."""
-    from live.siem_collector import get_alerts_from_config, SIEMConfig
+    from live.siem_collector import get_alerts_from_config
 
     if config_file:
         import json
@@ -95,7 +94,7 @@ def check(
     api_keys: str = typer.Option("", "--keys", "-k", help="Comma-separated API keys"),
 ) -> None:
     """Check IOC against threat feeds."""
-    from live.feed_poller import check_ioc_with_feeds, FeedConfig
+    from live.feed_poller import check_ioc_with_feeds
 
     api_key_list = api_keys.split(",") if api_keys else [""]
 
@@ -160,9 +159,11 @@ def triage(
     console.print(table)
 
     if create_ticket:
-        from live.ticket_creator import create_ticket_system
+        from live.ticket_creator import TicketManager
 
-        ticket = create_ticket_system("jira", host="").create_from_alert(enriched)
+        tm = TicketManager()
+        tm.add_jira(host="")
+        ticket = tm.create_from_alert(enriched)
         console.print(f"[green]Created ticket: {ticket.key}[/green]")
         console.print(f"[cyan]{ticket.url}[/cyan]")
 

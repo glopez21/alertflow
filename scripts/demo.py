@@ -85,7 +85,7 @@ def demo_ioc_extraction():
     demo_section("4. IOC EXTRACTION")
     
     step("Extract IOCs from alert text")
-    alert_text = """
+    _alert_text = """
     Alert: Suspicious connection detected
     Source IP: 192.168.1.50
     Destination: evil-domain.xyz

@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -100,8 +101,8 @@ class JiraCreator:
             if resp.status_code == 201:
                 data = resp.json()
                 return self._parse_issue(data)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Jira issue creation failed: %s", e)
 
         return self._sample_ticket(summary)
 
@@ -110,6 +111,15 @@ class JiraCreator:
             key=data.get("key", ""),
             url=f"{self.config.host}/browse/{data.get('key', '')}",
             status="Open",
+            created=datetime.utcnow().isoformat() + "Z",
+        )
+
+    def _sample_ticket(self, summary: str) -> AlertTicket:
+        return AlertTicket(
+            key=f"SOC-{hash(summary) % 10000}",
+            title=summary,
+            status="Open",
+            url=f"https://jira.example.com/browse/SOC-{hash(summary) % 10000}",
             created=datetime.utcnow().isoformat() + "Z",
         )
 
@@ -161,8 +171,8 @@ class ServiceNowCreator:
                     priority=sn_priority,
                     created=result.get("sys_created_on", ""),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("ServiceNow incident creation failed: %s", e)
 
         return self._sample_ticket(short_description)
 
@@ -171,6 +181,15 @@ class ServiceNowCreator:
             key=data.get("number", ""),
             url=f"{self.config.host}/incident.do?sys_id={data.get('sys_id', '')}",
             status=data.get("state", ""),
+        )
+
+    def _sample_ticket(self, summary: str) -> AlertTicket:
+        return AlertTicket(
+            key=f"SOC-{hash(summary) % 10000}",
+            title=summary,
+            status="Open",
+            url=f"https://servicenow.example.com/incident/SOC-{hash(summary) % 10000}",
+            created=datetime.utcnow().isoformat() + "Z",
         )
 
 
@@ -225,7 +244,7 @@ class TicketManager:
     ) -> str:
         """Format ticket description."""
         lines = [
-            f"## Alert Details",
+            "## Alert Details",
             f"- **Rule**: {alert_data.get('rule_name', 'Unknown')}",
             f"- **Severity**: {alert_data.get('severity', 'Unknown')}",
             f"- **Host**: {alert_data.get('host', 'Unknown')}",
@@ -254,7 +273,7 @@ class TicketManager:
             key=f"SOC-{1000}",
             title=title,
             status="Open",
-            url=f"https://jira.example.com/browse/SOC-1000",
+            url="https://jira.example.com/browse/SOC-1000",
             created=datetime.utcnow().isoformat() + "Z",
         )
 

@@ -4,14 +4,26 @@
 import argparse
 import json
 import socket
-import subprocess
-import sys
-from datetime import datetime
 from typing import Optional
+
+import ipaddress
+
+from utils import is_valid_ipv4
+
+
+def _is_valid_ipv6(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return addr.version == 6
+    except ValueError:
+        return False
 
 
 def enrich_ip(ip: str) -> dict:
     """Enrich IP with available context."""
+    if not is_valid_ipv4(ip) and not _is_valid_ipv6(ip):
+        return {"ip": ip, "error": f"Invalid IP address: {ip}", "checks": {}}
+
     result = {"ip": ip, "checks": {}}
 
     result["checks"]["reverse_dns"] = get_reverse_dns(ip)
@@ -21,11 +33,11 @@ def enrich_ip(ip: str) -> dict:
     return result
 
 
-def get_reverse_dns(ip: str) -> Optional[str]:
-    """Get reverse DNS for IP."""
+def get_reverse_dns(ip: str, timeout: float = 3.0) -> Optional[str]:
+    """Get reverse DNS for IP with configurable timeout."""
     try:
         return socket.gethostbyaddr(ip)[0]
-    except (socket.herror, socket.gaierror):
+    except (socket.herror, socket.gaierror, socket.timeout):
         return None
 
 
@@ -50,8 +62,6 @@ def get_geoip(ip: str) -> dict:
     elif first_octet == 192:
         second = int(ip.split(".")[1])
         if second == 168:
-            geo["type"] = "Private (192.168.x)"
-        elif second == 168:
             geo["type"] = "Private (192.168.x)"
         else:
             geo["type"] = "Public"

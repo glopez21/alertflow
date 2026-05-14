@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,7 +18,7 @@ class FeedConfig:
     type: str = ""  # virustotal, abuseipdb, alienvault, misp
     api_key: str = ""
     host: str = ""
-    verify_ssl: bool = False
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -56,6 +56,10 @@ class VirusTotalClient:
             headers={"x-apikey": config.api_key},
             verify=config.verify_ssl,
         )
+        self._reports: list[IOC] = []
+
+    def recent_reports(self) -> list[IOC]:
+        return list(self._reports)
 
     def check_ip(self, ip: str) -> IOC | None:
         """Check IP reputation."""
@@ -71,7 +75,7 @@ class VirusTotalClient:
                 confidence = malicious / total if total > 0 else 0
                 severity = "critical" if confidence > 0.5 else "high" if confidence > 0.2 else "medium"
 
-                return IOC(
+                result = IOC(
                     value=ip,
                     type="ip",
                     source="virustotal",
@@ -80,8 +84,10 @@ class VirusTotalClient:
                     last_seen=data.get("last_analysis_date", ""),
                     metadata={"stats": stats},
                 )
-        except Exception:
-            pass
+                self._reports.append(result)
+                return result
+        except Exception as e:
+            logger.warning("VirusTotal IP check failed for %s: %s", ip, e)
         return None
 
     def check_hash(self, hash_value: str) -> IOC | None:
@@ -97,7 +103,7 @@ class VirusTotalClient:
 
                 confidence = malicious / total if total > 0 else 0
 
-                return IOC(
+                result = IOC(
                     value=hash_value,
                     type="hash",
                     source="virustotal",
@@ -105,8 +111,10 @@ class VirusTotalClient:
                     severity="critical" if malicious > 20 else "high" if malicious > 5 else "medium",
                     metadata={"stats": stats},
                 )
-        except Exception:
-            pass
+                self._reports.append(result)
+                return result
+        except Exception as e:
+            logger.warning("VirusTotal hash check failed: %s", e)
         return None
 
 
@@ -120,6 +128,10 @@ class AbuseIPDBClient:
             headers={"Key": config.api_key, "Accept": "application/json"},
             verify=config.verify_ssl,
         )
+        self._reports: list[IOC] = []
+
+    def recent_reports(self) -> list[IOC]:
+        return list(self._reports)
 
     def check_ip(self, ip: str) -> IOC | None:
         """Check IP against AbuseIPDB."""
@@ -131,7 +143,7 @@ class AbuseIPDBClient:
                 data = resp.json().get("data", {})
                 abuse_confidence = data.get("abuseConfidenceScore", 0)
 
-                return IOC(
+                result = IOC(
                     value=ip,
                     type="ip",
                     source="abuseipdb",
@@ -145,8 +157,10 @@ class AbuseIPDBClient:
                         "usage_type": data.get("usageType"),
                     },
                 )
-        except Exception:
-            pass
+                self._reports.append(result)
+                return result
+        except Exception as e:
+            logger.warning("AbuseIPDB check failed for %s: %s", ip, e)
         return None
 
 
@@ -160,6 +174,10 @@ class AlienVaultOTXClient:
             headers={"X-OTX-API-KEY": config.api_key},
             verify=config.verify_ssl,
         )
+        self._reports: list[IOC] = []
+
+    def recent_reports(self) -> list[IOC]:
+        return list(self._reports)
 
     def check_ip(self, ip: str) -> IOC | None:
         """Check IP with OTX."""
@@ -169,7 +187,7 @@ class AlienVaultOTXClient:
                 data = resp.json().get("pulse_info", {})
                 pulses = data.get("count", 0)
 
-                return IOC(
+                result = IOC(
                     value=ip,
                     type="ip",
                     source="alienvault_otx",
@@ -178,8 +196,10 @@ class AlienVaultOTXClient:
                     last_seen=data.get("modified", ""),
                     metadata={"pulses": pulses},
                 )
-        except Exception:
-            pass
+                self._reports.append(result)
+                return result
+        except Exception as e:
+            logger.warning("AlienVault OTX check failed for %s: %s", ip, e)
         return None
 
 
@@ -221,11 +241,11 @@ class FeedPoller:
         return results
 
     def get_high_confidence(self, threshold: float = 0.5) -> list[IOC]:
-        """Get high confidence IOCs."""
+        """Get high confidence IOCs from recent checks."""
         high_confidence = []
         for feed in self.feeds.values():
             if hasattr(feed, "recent_reports"):
-                reports = feed.recent_reports()
+                reports = feed.recent_reports()  # type: ignore[arg-type]
                 for report in reports:
                     if report.confidence >= threshold:
                         high_confidence.append(report)
@@ -234,45 +254,28 @@ class FeedPoller:
 
 def check_ioc_with_feeds(ioc: str, feeds_config: list[dict]) -> list[dict]:
     """Check IOC against multiple feeds using config."""
-    results = []
+    poller = create_feed_poller(feeds_config)
+    ioc_type = "hash" if _is_probably_hash(ioc) else "ip"
+    results = poller.check_ioc(ioc, ioc_type)
+    return [r.to_dict() for r in results]
 
-    for config in feeds_config:
-        feed_type = config.get("type", "")
 
-        if feed_type == "virustotal":
-            client = VirusTotalClient(FeedConfig(api_key=config.get("api_key", "")))
-            if "." in ioc and len(ioc) > 40:
-                result = client.check_hash(ioc)
-            else:
-                result = client.check_ip(ioc)
-            if result:
-                results.append(result.to_dict())
-
-        elif feed_type == "abuseipdb":
-            client = AbuseIPDBClient(FeedConfig(api_key=config.get("api_key", "")))
-            result = client.check_ip(ioc)
-            if result:
-                results.append(result.to_dict())
-
-        elif feed_type == "alienvault":
-            client = AlienVaultOTXClient(FeedConfig(api_key=config.get("api_key", "")))
-            result = client.check_ip(ioc)
-            if result:
-                results.append(result.to_dict())
-
-    return results
+def _is_probably_hash(value: str) -> bool:
+    """Heuristic: check if value looks like a file hash vs IP."""
+    return len(value) in (32, 40, 64, 128) and all(c in "0123456789abcdefABCDEF" for c in value)
 
 
 def enrich_alert_with_feeds(alert: dict, feeds_config: list[dict]) -> dict:
     """Enrich alert with threat intelligence."""
+    result = dict(alert)
     iocs_to_check = []
 
-    if alert.get("src_ip"):
-        iocs_to_check.append((alert["src_ip"], "ip"))
-    if alert.get("dst_ip"):
-        iocs_to_check.append((alert["dst_ip"], "ip"))
-    if alert.get("hash"):
-        iocs_to_check.append((alert["hash"], "hash"))
+    if result.get("src_ip"):
+        iocs_to_check.append((result["src_ip"], "ip"))
+    if result.get("dst_ip"):
+        iocs_to_check.append((result["dst_ip"], "ip"))
+    if result.get("hash"):
+        iocs_to_check.append((result["hash"], "hash"))
 
     threat_intel = []
     for ioc, ioc_type in iocs_to_check:
@@ -281,9 +284,9 @@ def enrich_alert_with_feeds(alert: dict, feeds_config: list[dict]) -> dict:
             threat_intel.extend(results)
 
     if threat_intel:
-        alert["threat_intel"] = threat_intel
+        result["threat_intel"] = threat_intel
 
-    return alert
+    return result
 
 
 def create_feed_poller(configs: list[dict]) -> FeedPoller:
