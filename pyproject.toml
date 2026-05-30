@@ -14,7 +14,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.0.0",
-    "n3xuslib @ git+https://github.com/w01f/n3xuslib.git",
+    "n3xuslib @ git+https://github.com/glopez21/n3xuslib.git",
 ]
 
 [project.scripts]
