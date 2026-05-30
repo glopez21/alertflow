@@ -11,8 +11,15 @@ from rich.table import Table
 
 from db import AlertStore
 from pipeline import extract_and_enrich, push_to_threatpulse, disable_user_in_adminflow
+from augur_notifier import AugurNotifier
 
 app = typer.Typer(name="alertflow", help="AlertFlow - SOC Alert Triage")
+
+try:
+    from live.__main__ import app as live_app
+    app.add_typer(live_app, name="live")
+except ImportError:
+    pass
 console = Console()
 
 
@@ -33,6 +40,7 @@ def triage(
     threatpulse_key: str = typer.Option("", "--tp-key", help="ThreatPulse API key", envvar="THREATPULSE_API_KEY"),
     adminflow_url: str = typer.Option("", "--af-url", help="AdminFlow base URL", envvar="ADMINFLOW_URL"),
     adminflow_key: str = typer.Option("", "--af-key", help="AdminFlow API key", envvar="ADMINFLOW_API_KEY"),
+    augur_url: str = typer.Option("", "--augur-url", help="Augur hub URL", envvar="AUGUR_URL"),
 ):
     """Run interactive alert triage workflow with enrichment and integrations."""
     console.print("[bold blue]AlertFlow Triage Workflow[/bold blue]")
@@ -207,6 +215,15 @@ def triage(
         iocs = enrichment_data["iocs"]
         console.print(f"  IOCs: {sum(len(v) if isinstance(v, list) else sum(len(v2) for v2 in v.values()) for v in iocs.values())} found")
     console.print(f"  Saved as alert #{saved['id']}")
+
+    # Push to Augur hub
+    if augur_url:
+        augur = AugurNotifier({"hub_url": augur_url})
+        triage_data = {**data, "id": saved["id"], "status": alert_status, "analyst": analyst}
+        if augur.push_triage_result(triage_data, enrichment_data):
+            console.print("[green]✓ Pushed to Augur hub[/green]")
+        else:
+            console.print("[dim]Augur push skipped or failed[/dim]")
 
 
 @app.command()
