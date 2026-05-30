@@ -1,6 +1,6 @@
 # AlertFlow — Issues & Roadmap
 
-> Auto-generated tracking file. Last updated: 2026-05-14
+> Auto-generated tracking file. Last updated: 2026-05-30
 
 ---
 
