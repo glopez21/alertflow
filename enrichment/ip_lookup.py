@@ -27,66 +27,67 @@ def enrich_ip(ip: str) -> dict:
     result = {"ip": ip, "checks": {}}
 
     result["checks"]["reverse_dns"] = get_reverse_dns(ip)
-    result["checks"]["geoip"] = get_geoip(ip)
     result["checks"]["is_private"] = is_private_ip(ip)
+
+    if is_valid_ipv4(ip):
+        result["checks"]["geoip"] = get_geoip(ip)
+    else:
+        result["checks"]["geoip"] = {"country": "Unknown", "region": "IPv6", "type": "IPv6"}
 
     return result
 
 
 def get_reverse_dns(ip: str, timeout: float = 3.0) -> Optional[str]:
     """Get reverse DNS for IP with configurable timeout."""
+    old_timeout = socket.getdefaulttimeout()
     try:
+        socket.setdefaulttimeout(timeout)
         return socket.gethostbyaddr(ip)[0]
     except (socket.herror, socket.gaierror, socket.timeout):
         return None
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 def get_geoip(ip: str) -> dict:
-    """Get basic geo information (simple lookup)."""
+    """Get basic geo information (simple lookup, IPv4 only)."""
     if is_private_ip(ip):
         return {"country": "Private", "region": "Internal"}
 
     geo = {"country": "Unknown", "region": "Unknown"}
 
-    first_octet = int(ip.split(".")[0])
-    if first_octet in range(1, 224):
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return geo
+
+    first_octet = int(parts[0])
+    if 1 <= first_octet < 224:
         geo["type"] = "Public"
-    elif first_octet == 10:
-        geo["type"] = "Private (10.x)"
-    elif first_octet == 172:
-        second = int(ip.split(".")[1])
-        if 16 <= second <= 31:
-            geo["type"] = "Private (172.16-31.x)"
-        else:
-            geo["type"] = "Public"
-    elif first_octet == 192:
-        second = int(ip.split(".")[1])
-        if second == 168:
-            geo["type"] = "Private (192.168.x)"
-        else:
-            geo["type"] = "Public"
+    else:
+        geo["type"] = "Reserved"
 
     return geo
 
 
 def is_private_ip(ip: str) -> bool:
-    """Check if IP is private."""
-    parts = ip.split(".")
-    if len(parts) != 4:
-        return False
-
-    first = int(parts[0])
-    second = int(parts[1])
-
-    if first == 10:
-        return True
-    if first == 172 and 16 <= second <= 31:
-        return True
-    if first == 192 and second == 168:
-        return True
-    if first in (127, 255):
-        return True
-
+    """Check if IP is private (IPv4 or IPv6)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_reserved
+    except ValueError:
+        parts = ip.split(".")
+        if len(parts) != 4:
+            return False
+        first = int(parts[0])
+        second = int(parts[1])
+        if first == 10:
+            return True
+        if first == 172 and 16 <= second <= 31:
+            return True
+        if first == 192 and second == 168:
+            return True
+        if first in (127, 255):
+            return True
     return False
 
 

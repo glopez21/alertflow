@@ -1,10 +1,10 @@
-"""Health check endpoint."""
+"""Health check endpoint with database connectivity."""
 
 import time
 
 from api.models import HealthResponse
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 _start_time: float | None = None
 
 
@@ -25,8 +25,19 @@ def set_start_time():
 
 
 async def health() -> HealthResponse:
+    from api.deps import get_store
+    store = get_store()
+    try:
+        count = store.count_alerts()
+        db_status = "connected"
+    except Exception:
+        count = -1
+        db_status = "error"
+
     return HealthResponse(
         status="healthy",
         version=VERSION,
         uptime=get_uptime(),
+        db_status=db_status,
+        alert_count=count,
     )

@@ -94,12 +94,11 @@ class AugurNotifier:
                 },
                 tags=["alertflow", f"severity:{alert.get('severity', 'medium')}"],
             )
+            self._emit_n3xus(alert, enrichment)
             return True
         except Exception as e:
-            logger.debug("Augur push failed: %s", e)
+            logger.warning("Augur push failed: %s", e)
             return False
-        finally:
-            self._emit_n3xus(alert, enrichment)
 
     def _emit_n3xus(self, alert: dict, enrichment: dict | None = None) -> None:
         config = N3xusConfig.from_env()
@@ -134,6 +133,10 @@ class AugurNotifier:
                 )
 
         try:
-            asyncio.run(_emit())
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_emit())
+            except RuntimeError:
+                asyncio.run(_emit())
         except Exception as e:
-            logger.debug("n3xuslib emit failed: %s", e)
+            logger.warning("n3xuslib emit failed: %s", e)

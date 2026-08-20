@@ -58,8 +58,8 @@ def domain(address: str, json: bool = typer.Option(False, "--json", help="Output
         _render_checks_table(f"Domain Enrichment: {address}", result)
 
 
-@app.command()
-def hash(file_hash: str, json: bool = typer.Option(False, "--json", help="Output as JSON")):
+@app.command("hash")
+def hash_lookup(file_hash: str, json: bool = typer.Option(False, "--json", help="Output as JSON")):
     """Enrich a file hash."""
     from enrichment.hash_lookup import enrich_hash
 

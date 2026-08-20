@@ -33,3 +33,10 @@
 - [ ] Privilege escalation
 - [ ] Unknown malware
 - [ ] Ransomware indicators
+- [ ] Active C2 connection
+
+**CLOSE (with documentation) if:**
+- [ ] Confirmed false positive
+- [ ] Authorized/maintenance activity
+- [ ] Duplicate alert
+- [ ] Benign explanation found

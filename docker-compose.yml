@@ -9,13 +9,26 @@ services:
       - ALERTFLOW_DB=/data/alertflow.db
       - ALERTFLOW_API_KEY=${ALERTFLOW_API_KEY:-}
       - ALERTFLOW_CORS_ORIGINS=${ALERTFLOW_CORS_ORIGINS:-*}
+      - ALERTFLOW_LOG_LEVEL=${ALERTFLOW_LOG_LEVEL:-INFO}
+      - ALERTFLOW_LOG_FORMAT=${ALERTFLOW_LOG_FORMAT:-json}
+      - ALERTFLOW_RATE_LIMIT=${ALERTFLOW_RATE_LIMIT:-60/minute}
+      - ALERTFLOW_RETENTION_DAYS=${ALERTFLOW_RETENTION_DAYS:-0}
+      - ALERTFLOW_KAFKA_ENABLED=${ALERTFLOW_KAFKA_ENABLED:-false}
+      - KAFKA_BROKER=${KAFKA_BROKER:-kafka:9092}
+      - ALERTFLOW_KAFKA_TOPIC=${ALERTFLOW_KAFKA_TOPIC:-logsentry-to-alertflow}
+      - ALERTFLOW_MYSQL_URL=${ALERTFLOW_MYSQL_URL:-}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   cli:
     build: .
@@ -24,6 +37,7 @@ services:
       - ./alerts:/alerts:ro
     environment:
       - ALERTFLOW_DB=/data/alertflow.db
+      - ALERTFLOW_MYSQL_URL=${ALERTFLOW_MYSQL_URL:-}
       - THREATPULSE_URL=${THREATPULSE_URL:-}
       - THREATPULSE_API_KEY=${THREATPULSE_API_KEY:-}
       - ADMINFLOW_URL=${ADMINFLOW_URL:-}

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "alertflow"
-version = "0.6.0"
+version = "0.7.0"
 description = "SOC alert triage workflow with enrichment and live integration"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,12 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.0.0",
     "n3xuslib @ git+https://github.com/glopez21/n3xuslib.git",
+    "slowapi>=0.1.9",
+    "prometheus-client>=0.20.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
+    "structlog>=24.0.0",
+    "aiomysql>=0.2.0",
+    "aiokafka>=0.10.0",
 ]
 
 [project.scripts]

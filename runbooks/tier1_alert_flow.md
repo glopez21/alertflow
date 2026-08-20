@@ -8,10 +8,10 @@
    - Identify affected asset(s)
 
 2. **Check severity**
-   - Critical: Active attack in progress
-   - High: Likely compromise indicators
-   - Medium: Suspicious, needs investigation
-   - Low: Anomalous, may be benign
+   - P1: Active attack in progress
+   - P2: Likely compromise indicators
+   - P3: Suspicious, needs investigation
+   - P4: Anomalous, may be benign
 
 3. **Initial classification**
    - Known good (expected activity)
@@ -32,7 +32,7 @@
 
 ```bash
 # Check user recent activity
-grep <username> /var/log/auth.log | tail -20
+uv run -m enrichment user <username>
 
 # Check asset baseline
 aws ec2 describe-instances --instance-ids <id>

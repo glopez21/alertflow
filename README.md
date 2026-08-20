@@ -1,86 +1,138 @@
 # AlertFlow
 
-**Standardized alert triage workflow system for Tier 1 SOC operations**  - A complete toolkit for Tier 1 analysts.
+**SOC alert triage workflow system with enrichment, live integration, and REST API.**
 
-AlertFlow is my standardized alert triage system.  I built AlertFlow to understand the structured approach required for consistent, efficient alert handling and to ensure I follow consistent handling procedures for every alert—never missing enrichment steps or skipping documentation. Every alert gets validated, enriched with available context, and properly closed with reasoning. . It implements the 5-phase triage workflow used in production SOCs—ensuring every alert gets proper validation, enrichment, and documentation.
-
-**What it demonstrates:**
-- **SOC workflow understanding** - I know the standard alert handling process (REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE)
-- **Enrichment capability** - I can investigate IOCs using multiple sources (IP reputation, domain analysis, hash checking)
-- **Documentation skills** - I understand the importance of timeline tracking and evidence preservation
-- **False positive handling** - I know how to identify and properly close FP alerts with documentation
+AlertFlow is a production-ready Tier 1 SOC alert handling system. It implements the 5-phase triage workflow (REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE) with automated IOC enrichment, threat intelligence integration, and a REST API for programmatic access.
 
 ---
 
-## For SOC Analysts
-
-A production-ready alert handling system with:
-- **5-Phase Workflow**: REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE
-- **Enrichment Tools**: IP, domain, hash, user investigation
-- **Runbooks**: Phishing, malware, ransomware procedures
-- **Live Integration**: SIEM queries, ticketing, threat feeds
-
-
-**Key Skills Demonstrated:**
-- SOC workflow understanding
-- CLI tool development (Python/Typer)
-- API integration patterns
-- Documentation for operations
-- Realistic simulation of analyst tasks
-
----
-
-## Quick Demo
+## Quick Start
 
 ```bash
 cd projects/alertflow
 uv sync
 
-# Demo workflow (no setup needed)
-uv run scripts/demo.py
+# Run the CLI triage workflow
+uv run main.py triage alert.json --enrich --push
+
+# Start the REST API server
+uvicorn api.app:app --host 0.0.0.0 --port 8000
+
+# Or use Docker
+docker compose up api
 ```
 
 ---
 
 ## Features
 
-### Enrichment Tools
-- **IP Lookup**: Reverse DNS, GeoIP, private IP detection
-- **Domain Lookup**: WHOIS, suspicious patterns, reputation
-- **Hash Lookup**: MD5/SHA256 reputation check
-- **User Lookup**: Account info, activity, risk scoring
-- **IOC Extract**: Auto-extract IOCs from alert text
+### CLI Triage Workflow
+- Interactive 5-phase triage: REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE
+- Automated IOC extraction and enrichment during triage
+- Push results to ThreatPulse and disable compromised users via AdminFlow
+- Alert lifecycle management: create, list, close, false-positive, delete
 
-### Runbooks
-- **Tier 1 Alert Flow** - General alert handling
-- **Phishing Alert** - Email investigation
-- **Malware Alert** - Detection response
+### REST API
+- Full alert CRUD: `GET/POST/PATCH/DELETE /api/alerts`
+- IOC enrichment: `POST /api/enrich`
+- Health check: `GET /api/health`
+- Prometheus metrics: `GET /metrics`
+- Authentication via API key (Bearer token or X-API-Key header)
+- Rate limiting per endpoint
+
+### Enrichment Tools
+- **IP Lookup**: Reverse DNS, GeoIP, private IP detection (IPv4/IPv6)
+- **Domain Lookup**: WHOIS, DNS records, reputation, DGA detection
+- **Hash Lookup**: MD5/SHA1/SHA256 type detection, reputation scoring
+- **User Lookup**: Account info, activity, group membership, risk scoring
+- **IOC Extract**: Automated extraction from raw alert text
 
 ### Live Integration
-- **SIEM Connector**: Splunk/Elasticsearch queries
-- **Ticketing**: Jira/ServiceNow integration
-- **Threat Feeds**: VirusTotal, AbuseIPDB, AlienVault OTX
+- **SIEM**: Splunk and Elasticsearch alert collectors
+- **Ticketing**: Jira and ServiceNow ticket creation
+- **Threat Feeds**: VirusTotal, AbuseIPDB, AlienVault OTX polling
+- **Kafka**: Real-time alert ingestion from message bus
+
+### Infrastructure
+- **Database**: SQLite (dev/test) or MySQL (production)
+- **Logging**: Structured JSON logging with request tracking
+- **Metrics**: Prometheus + OpenTelemetry/Jaeger tracing support
+- **Auth**: HMAC-compliant API key authentication with audit trail
+- **Docker**: Multi-stage build, health checks, resource limits
 
 ---
 
-## Usage Examples
+## Usage
 
-### Enrichment (Offline)
+### Enrichment
 ```bash
 # IP investigation
-uv run enrichment/ip_lookup.py 192.168.1.100
+uv run -m enrichment ip 192.168.1.100
 
 # Domain reputation
-uv run enrichment/domain_lookup.py suspicious-domain.xyz
+uv run -m enrichment domain suspicious-domain.xyz
 
 # Hash check
-uv run enrichment/hash_lookup.py aadea647deadbeef...
+uv run -m enrichment hash aadea647deadbeef...
 
 # User context
-uv run enrichment/user_lookup.py admin
+uv run -m enrichment user admin
 
 # Auto-detect IOC type
-uv run enrichment/all 192.168.1.1
+uv run -m enrichment all 192.168.1.1
+```
+
+### CLI Commands
+```bash
+# Triage an alert file with enrichment and ThreatPulse push
+uv run main.py triage alert.json --enrich --push --tp-url https://tp.example.com
+
+# Create an alert
+uv run main.py create "Suspicious RDP Login" --severity P2 --source splunk
+
+# List alerts
+uv run main.py list
+uv run main.py list "Open"
+
+# Close an alert
+uv run main.py close 1 --analyst "jsmith" --reason "Authorized admin activity"
+
+# Mark as false positive
+uv run main.py fp 1 --reason "Vulnerability scanner"
+
+# Add a note
+uv run main.py note 1 --note "Checked AD logs — user was on PTO"
+
+# View alert timeline
+uv run main.py timeline 1
+
+# Delete an alert
+uv run main.py delete 1
+
+# Migrate from legacy JSON storage
+uv run main.py migrate alerts.json
+```
+
+### REST API
+```bash
+# Create alert
+curl -X POST http://localhost:8000/api/alerts \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Suspicious Login", "severity": "P2", "source": "splunk"}'
+
+# List alerts
+curl http://localhost:8000/api/alerts?status=Open&limit=10
+
+# Enrich an IOC
+curl -X POST http://localhost:8000/api/enrich \
+  -H "Content-Type: application/json" \
+  -d '{"target": "8.8.8.8"}'
+
+# Health check
+curl http://localhost:8000/api/health
+
+# Metrics
+curl http://localhost:8000/metrics
 ```
 
 ### Live Integration
@@ -95,10 +147,46 @@ uv run -m live check 192.168.1.1 --feeds abuseipdb,virustotal
 uv run -m live ticket "Alert title" --priority critical
 ```
 
-### Full Triage
+### Docker
 ```bash
-# Example: triage an alert file
-uv run -m live triage alert.json --ticket
+# Build and run API server
+docker compose up api
+
+# Run CLI commands
+docker compose run cli triage alert.json --enrich --push
+docker compose run cli list
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALERTFLOW_DB` | `alertflow.db` | SQLite database path |
+| `ALERTFLOW_MYSQL_URL` | _(empty)_ | MySQL connection URL (overrides SQLite) |
+| `ALERTFLOW_API_KEY` | _(empty)_ | API key for authentication (empty = disabled) |
+| `ALERTFLOW_AUTH_ENABLED` | `true` | Enable/disable API authentication |
+| `ALERTFLOW_CORS_ORIGINS` | `*` | Comma-separated CORS origins |
+| `ALERTFLOW_LOG_LEVEL` | `INFO` | Log level: DEBUG, INFO, WARNING, ERROR |
+| `ALERTFLOW_LOG_FORMAT` | `json` | Log format: `json` or `console` |
+| `ALERTFLOW_RATE_LIMIT` | `60/minute` | API rate limit |
+| `ALERTFLOW_RETENTION_DAYS` | `0` | Auto-delete closed alerts (0 = disabled) |
+| `ALERTFLOW_KAFKA_ENABLED` | `false` | Enable Kafka consumer |
+| `ALERTFLOW_KAFKA_TOPIC` | `logsentry-to-alertflow` | Kafka topic to consume |
+| `ALERTFLOW_KAFKA_GROUP` | `alertflow-consumers` | Kafka consumer group |
+| `KAFKA_BROKER` | `kafka:9092` | Kafka broker address |
+| `THREATPULSE_URL` | _(empty)_ | ThreatPulse base URL |
+| `THREATPULSE_API_KEY` | _(empty)_ | ThreatPulse API key |
+| `ADMINFLOW_URL` | _(empty)_ | AdminFlow base URL |
+| `ADMINFLOW_API_KEY` | _(empty)_ | AdminFlow API key |
+| `AUGUR_URL` | _(empty)_ | Augur hub URL |
+
+### MySQL Configuration
+```bash
+export ALERTFLOW_MYSQL_URL=mysql://alertflow_user:password@localhost:3306/alertflow
 ```
 
 ---
@@ -125,6 +213,21 @@ uv run -m live triage alert.json --ticket
 
 ---
 
+## Architecture
+
+```
+Logs ──► [LogSentry] ──detections──► [AlertFlow] ──triaged alerts──► [ThreatPulse]
+          (log parser      (triage CLI,        (incidents, IOCs,
+          + detection)      REST API)           notifications)
+                                    │
+                                    │ user disable / lock
+                                    ▼
+                               [AdminFlow]
+                           (AD automation)
+```
+
+---
+
 ## Escalation Criteria
 
 | Severity | Definition | Example |
@@ -132,7 +235,27 @@ uv run -m live triage alert.json --ticket
 | **P1** | Active compromise | Malware, lateral movement, data exfil |
 | **P2** | Suspected compromise | Failed logins burst, privilege escalation |
 | **P3** | Suspicious activity | Single failed login, policy violation |
-| **Close** | False positive | Maintenance, authorized user |
+| **P4** | Informational | Baseline deviation, audit event |
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `fastapi` | REST API framework |
+| `uvicorn` | ASGI server |
+| `pydantic` | Request/response validation |
+| `typer` | CLI framework |
+| `rich` | Terminal UI |
+| `httpx` | HTTP client |
+| `slowapi` | API rate limiting |
+| `prometheus-client` | Metrics |
+| `prometheus-fastapi-instrumentator` | API metrics |
+| `structlog` | Structured logging |
+| `aiomysql` | MySQL async driver |
+| `aiokafka` | Kafka consumer |
+| `n3xuslib` | n3xusDB integration |
 
 ---
 
@@ -140,53 +263,61 @@ uv run -m live triage alert.json --ticket
 
 ```
 alertflow/
-├── enrichment/         # Offline enrichment tools (6 scripts)
+├── main.py                    # CLI entry point
+├── pipeline.py                # Triage pipeline (enrich → notify → respond)
+├── db.py                      # Alert storage (SQLite/MySQL)
+├── utils.py                   # Shared utilities
+├── models.py                  # Top-level Pydantic models
+├── auth.py                    # API authentication middleware
+├── logging_config.py          # Structured logging setup
+├── kafka_consumer.py          # Kafka alert ingestion
+├── augur_notifier.py          # Augur/n3xusDB push
+├── api/                       # FastAPI REST API
+│   ├── app.py                 # Application factory + middleware
+│   ├── routes.py              # Alert CRUD endpoints
+│   ├── enrich.py              # Enrichment endpoint
+│   ├── models.py              # Request/response models
+│   ├── health.py              # Health check
+│   └── deps.py                # Dependency injection
+├── enrichment/                # IOC enrichment tools
 │   ├── ip_lookup.py
 │   ├── domain_lookup.py
 │   ├── hash_lookup.py
 │   ├── user_lookup.py
 │   ├── ioc_extract.py
-│   └── __main__.py     # Unified CLI
-├── live/              # Live integration (4 scripts)
+│   └── __main__.py            # Unified CLI
+├── integrations/              # External system clients
+│   ├── threatpulse.py
+│   └── adminflow.py
+├── live/                      # Live integration modules
 │   ├── siem_collector.py
 │   ├── ticket_creator.py
 │   ├── feed_poller.py
 │   └── __main__.py
-├── runbooks/          # Alert handling procedures
-│   ├── tier1_alert_flow.md
-│   ├── tier2_phishing_alert.md
-│   └── tier3_malware_alert.md
-├── templates/         # Ticket templates
-├── checklists/        # Quick references
-├── scripts/
-│   └── demo.py       # Demo workflow
-├── ISSUES.md         # Bug tracking & roadmap
-└── dev_notes.md      # Development notes
+├── tests/                     # 148 tests
+├── runbooks/                  # Alert handling procedures
+├── templates/                 # Ticket templates
+├── checklists/                # Quick references
+├── Dockerfile                 # Multi-stage build
+├── docker-compose.yml         # API + CLI services
+├── pyproject.toml             # Dependencies & metadata
+└── .env.example               # Configuration reference
 ```
-
-## Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `typer` | CLI framework |
-| `rich` | Terminal UI |
-| `httpx` | HTTP client |
 
 ---
 
-Or run the automated demo:
+## Testing
 
 ```bash
-uv run python scripts/demo.py
+# Run all tests
+uv run pytest tests/ -v
+
+# Run with coverage
+uv run pytest tests/ --cov=.
+
+# Lint
+uv run ruff check .
 ```
-
-## Tech Stack
-
-- **Python 3.11+**
-- **Typer** - CLI
-- **Rich** - Terminal UI
-- **HTTPX** - API client
-- **SQLite** option for persistence
 
 ---
 

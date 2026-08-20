@@ -40,7 +40,7 @@
 
 ```bash
 # Check sender domain
-python -m enrichment.domain_lookup <sender_domain>
+uv run -m enrichment domain <sender_domain>
 
 # Check for other recipients in SIEM
 index=email sender="<sender_email>"
@@ -58,7 +58,7 @@ curl -I <suspicious_link>  # Check headers only
 ### Domain Enrichment
 
 ```bash
-python -m enrichment.domain_lookup malicious-domain.com
+uv run -m enrichment domain malicious-domain.com
 ```
 
 ### Link Analysis
@@ -70,13 +70,13 @@ python -m enrichment.domain_lookup malicious-domain.com
 ### Hash Enrichment
 
 ```bash
-python -m enrichment.hash_lookup <attachment_hash>
+uv run -m enrichment hash <attachment_hash>
 ```
 
 ### User Context
 
 ```bash
-python -m enrichment.user_lookup <target_user>
+uv run -m enrichment user <target_user>
 ```
 
 ---

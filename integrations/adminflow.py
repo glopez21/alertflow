@@ -4,11 +4,15 @@ Automates AD response actions via the AdminFlow REST API.
 """
 
 import logging
+import re
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
 class AdminFlowClient:
@@ -33,7 +37,7 @@ class AdminFlowClient:
     def disable_user(self, username: str) -> dict:
         """Disable an AD user account."""
         try:
-            resp = self._client.put(f"/api/users/{username}/disable")
+            resp = self._client.put(f"/api/users/{_safe_url_path(username)}/disable")
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPError as e:
@@ -43,7 +47,7 @@ class AdminFlowClient:
     def enable_user(self, username: str) -> dict:
         """Enable an AD user account."""
         try:
-            resp = self._client.put(f"/api/users/{username}/enable")
+            resp = self._client.put(f"/api/users/{_safe_url_path(username)}/enable")
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPError as e:
@@ -53,7 +57,7 @@ class AdminFlowClient:
     def reset_password(self, username: str) -> dict:
         """Reset an AD user password."""
         try:
-            resp = self._client.put(f"/api/users/{username}/reset-password")
+            resp = self._client.put(f"/api/users/{_safe_url_path(username)}/reset-password")
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPError as e:
@@ -63,7 +67,7 @@ class AdminFlowClient:
     def get_user(self, username: str) -> Optional[dict]:
         """Get AD user details."""
         try:
-            resp = self._client.get(f"/api/users/{username}")
+            resp = self._client.get(f"/api/users/{_safe_url_path(username)}")
             if resp.status_code == 200:
                 return resp.json()
         except httpx.HTTPError as e:
@@ -102,3 +106,10 @@ class AdminFlowClient:
 
     def close(self):
         self._client.close()
+
+
+def _safe_url_path(username: str) -> str:
+    """Sanitize and URL-encode a username for use in URL paths."""
+    if not _USERNAME_RE.match(username):
+        logger.warning("Invalid username format: %s", username)
+    return quote(username, safe="")

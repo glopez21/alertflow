@@ -32,6 +32,7 @@ class AlertListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    has_more: bool = False
 
 
 class NoteCreate(BaseModel):
@@ -40,7 +41,7 @@ class NoteCreate(BaseModel):
 
 
 class StatusUpdate(BaseModel):
-    status: Literal["Open", "In Progress", "Escalated", "Closed", "Closed - FP"]
+    status: Literal["Open", "In Progress", "Escalated", "Closed", "Closed - FP", "Closed - Benign", "Closed - Responded"]
     analyst: str = Field(default="", max_length=100)
     fp_reason: str = Field(default="", max_length=1000)
 
@@ -64,3 +65,5 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     uptime: str
+    db_status: str = "unknown"
+    alert_count: int = -1

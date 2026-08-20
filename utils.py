@@ -31,10 +31,10 @@ def detect_ioc_type(target: str) -> str:
         return "hash"
 
     if "." in target and not target.replace(".", "").replace("-", "").isdigit() and len(target) < 253:
-        if any(tld in target for tld in (".com", ".net", ".org", ".io", ".xyz", ".top",
-                                           ".pw", ".tk", ".ml", ".ga", ".cf", ".gq",
-                                           ".info", ".biz", ".me", ".co", ".ru", ".cn",
-                                           ".in", ".au", ".uk", ".de", ".fr", ".jp", ".br")):
+        if any(target.endswith(tld) for tld in (".com", ".net", ".org", ".io", ".xyz", ".top",
+                                                ".pw", ".tk", ".ml", ".ga", ".cf", ".gq",
+                                                ".info", ".biz", ".me", ".co", ".ru", ".cn",
+                                                ".in", ".au", ".uk", ".de", ".fr", ".jp", ".br")):
             return "domain"
         if not target[0].isdigit():
             return "domain"

@@ -8,7 +8,7 @@
 | Rule Name | |
 | Timestamp | |
 | Severity | [P1/P2/P3/P4] |
-| Status | [New/In Progress/Escalated/Closed] |
+| Status | [New/In Progress/Escalated/Closed - Benign/Closed - Responded] |
 
 ---
 
@@ -68,7 +68,7 @@
 - [ ] Verified assetbaseline
 - [ ] Ran IP enrichment
 - [ ] Reviewed related alerts
-- [ ]
+- [ ] Checked for lateral movement
 
 ---
 

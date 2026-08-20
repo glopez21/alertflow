@@ -84,8 +84,8 @@ def triage(
         default="y",
     )
 
-    if is_legitimate == "y":
-        console.print("\n[green]Alert verified as legitimate - no action needed[/green]")
+    if is_legitimate == "n":
+        console.print("\n[green]Alert dismissed as false positive - no action needed[/green]")
         return
 
     enrichment_data = {}
@@ -180,7 +180,7 @@ def triage(
         alert_status = "Closed"
         console.print("\n[blue]✓ Alert closed[/blue]")
 
-# Save to database
+    # Save to database
     saved = store.add_alert(title, severity, data.get("source", "triage"), ioc=src_ip or "")
     store.update_status(saved["id"], alert_status, analyst, fp_reason)
     if enrichment_data:

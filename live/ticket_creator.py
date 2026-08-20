@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -66,6 +67,15 @@ class JiraCreator:
             auth=(config.username, config.api_token),
         )
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        self._client.close()
+
     def create_issue(
         self,
         summary: str,
@@ -111,16 +121,17 @@ class JiraCreator:
             key=data.get("key", ""),
             url=f"{self.config.host}/browse/{data.get('key', '')}",
             status="Open",
-            created=datetime.utcnow().isoformat() + "Z",
+            created=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
     def _sample_ticket(self, summary: str) -> AlertTicket:
+        ticket_id = int(hashlib.md5(summary.encode()).hexdigest()[:8], 16) % 10000
         return AlertTicket(
-            key=f"SOC-{hash(summary) % 10000}",
+            key=f"SOC-{ticket_id}",
             title=summary,
             status="Open",
-            url=f"https://jira.example.com/browse/SOC-{hash(summary) % 10000}",
-            created=datetime.utcnow().isoformat() + "Z",
+            url=f"https://jira.example.com/browse/SOC-{ticket_id}",
+            created=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
 
@@ -133,6 +144,15 @@ class ServiceNowCreator:
             base_url=config.host,
             auth=(config.username, config.password),
         )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        self._client.close()
 
     def create_incident(
         self,
@@ -184,12 +204,13 @@ class ServiceNowCreator:
         )
 
     def _sample_ticket(self, summary: str) -> AlertTicket:
+        ticket_id = int(hashlib.md5(summary.encode()).hexdigest()[:8], 16) % 10000
         return AlertTicket(
-            key=f"SOC-{hash(summary) % 10000}",
+            key=f"SOC-{ticket_id}",
             title=summary,
             status="Open",
-            url=f"https://servicenow.example.com/incident/SOC-{hash(summary) % 10000}",
-            created=datetime.utcnow().isoformat() + "Z",
+            url=f"https://servicenow.example.com/incident/SOC-{ticket_id}",
+            created=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
 
@@ -235,8 +256,6 @@ class TicketManager:
         elif system == "servicenow":
             return creator.create_incident(title, description, priority)
 
-        return self._sample_ticket(title)
-
     def _format_description(
         self,
         alert_data: dict,
@@ -274,7 +293,7 @@ class TicketManager:
             title=title,
             status="Open",
             url="https://jira.example.com/browse/SOC-1000",
-            created=datetime.utcnow().isoformat() + "Z",
+            created=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
 

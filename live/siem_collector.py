@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -152,10 +153,13 @@ class SplunkCollector:
         limit: int = 100,
     ) -> list[Alert]:
         """Get recent alerts."""
-        query = f"index={self.config.index}"
+        safe_index = re.sub(r"[^a-zA-Z0-9_.\-]", "", self.config.index)
+        query = f"index={safe_index}"
         if severity:
-            query += f" severity={severity}"
-        query += f" | head {limit}"
+            safe_severity = re.sub(r"[^a-zA-Z0-9]", "", severity)
+            query += f" severity={safe_severity}"
+        safe_limit = max(1, min(int(limit), 10000))
+        query += f" | head {safe_limit}"
 
         return self.search(query, earliest=f"-{hours}h")
 
@@ -172,7 +176,7 @@ class ElasticsearchCollector:
 
     def search(self, query: str, hours: int = 1) -> list[Alert]:
         """Execute Elasticsearch query."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         start = (now - timedelta(hours=hours)).isoformat()
 
         es_query = {
@@ -251,7 +255,7 @@ def _sample_alerts() -> list[Alert]:
             source="siem",
             rule_name="Failed Login Attempt - High Frequency",
             severity="high",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             host="workstation01",
             user="john.smith",
             src_ip="192.168.1.100",
@@ -262,7 +266,7 @@ def _sample_alerts() -> list[Alert]:
             source="siem",
             rule_name="Suspicious PowerShell Execution",
             severity="critical",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             host="server01",
             user="admin",
             src_ip="192.168.1.50",
@@ -272,7 +276,7 @@ def _sample_alerts() -> list[Alert]:
             source="siem",
             rule_name="Firewall Block - Malicious IP",
             severity="medium",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             host="firewall",
             dst_ip="203.0.113.50",
         ),
