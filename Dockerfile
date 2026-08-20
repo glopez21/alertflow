@@ -1,23 +1,32 @@
+# ==========================================
+# Stage 1: Build dependencies
+# ==========================================
 FROM python:3.11-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
-RUN uv sync --frozen --no-dev
 
-
+# ==========================================
+# Stage 2: Final lightweight runtime
+# ==========================================
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 1000 alertflow && \
-    useradd --uid 1000 --gid alertflow --shell /bin/bash --create-home alertflow
+RUN groupadd -r alertflow && useradd -r -g alertflow -u 10001 alertflow
 
 WORKDIR /app
 
@@ -27,6 +36,8 @@ COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+
+RUN mkdir -p /data && chown alertflow:alertflow /data
 
 USER alertflow
 

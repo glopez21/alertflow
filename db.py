@@ -1,425 +1,458 @@
-"""Alert storage — supports SQLite (dev/test) and MySQL (production)."""
+"""Alert storage — SQLAlchemy ORM with SQLite (dev) and MySQL (production).
+
+Provides the ``AlertStore`` class which wraps a SQLAlchemy engine and exposes
+CRUD operations for the ``alerts`` table.  In development the store uses a
+local SQLite file with WAL journaling; in production it connects to MySQL via
+the ``ALERTFLOW_MYSQL_URL`` environment variable.
+
+Thread safety
+-------------
+All public methods acquire an ``RLock`` before touching the session to allow
+concurrent FastAPI request handlers (which run in a thread-pool for sync
+endpoints) to safely share a single ``AlertStore`` instance.  Sessions are
+created per-call and closed immediately (context-manager pattern) to avoid
+connection leaks.
+
+WAL mode (SQLite only)
+----------------------
+Write-Ahead Logging is enabled on every new SQLite connection via a
+``"connect"`` event listener.  WAL allows concurrent readers while a write is
+in-progress and avoids the ``database is locked`` errors that plague the
+default rollback journal under multi-threaded access.
+"""
 
 import json
 import os
-import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-
-def _alert_from_row(row) -> dict:
-    if isinstance(row, sqlite3.Row):
-        return {
-            "id": row["id"],
-            "title": row["title"],
-            "severity": row["severity"],
-            "source": row["source"],
-            "ioc": row["ioc"] or "",
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "analyst": row["analyst"] or "",
-            "fp_reason": row["fp_reason"] or "",
-            "enrichment": json.loads(row["enrichment"]) if row["enrichment"] else {},
-            "notes": json.loads(row["notes"]) if row["notes"] else [],
-        }
-    else:
-        return {
-            "id": row[0],
-            "title": row[1],
-            "severity": row[2],
-            "source": row[3],
-            "ioc": row[4] or "",
-            "status": row[5],
-            "created_at": row[6],
-            "updated_at": row[7],
-            "analyst": row[8] or "",
-            "fp_reason": row[9] or "",
-            "enrichment": json.loads(row[10]) if row[10] else {},
-            "notes": json.loads(row[11]) if row[11] else [],
-        }
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    event,
+)
+from sqlalchemy.orm import Session, sessionmaker, DeclarativeBase
 
 
-def _parse_mysql_row(cursor) -> Optional[dict]:
-    """Parse a single MySQL row with JSON fields."""
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    cols = [d[0] for d in cursor.description]
-    d = {col: row[i] for i, col in enumerate(cols)}
-    d["enrichment"] = json.loads(d.get("enrichment") or "{}")
-    d["notes"] = json.loads(d.get("notes") or "[]")
-    return d
+class Base(DeclarativeBase):
+    """Declarative base for all ORM models in this application."""
+    pass
 
 
-def _parse_mysql_rows(cursor) -> list[dict]:
-    """Parse multiple MySQL rows with JSON fields."""
-    cols = [d[0] for d in cursor.description]
-    rows = cursor.fetchall()
-    result = []
-    for row in rows:
-        d = {col: row[i] for i, col in enumerate(cols)}
-        d["enrichment"] = json.loads(d.get("enrichment") or "{}")
-        d["notes"] = json.loads(d.get("notes") or "[]")
-        result.append(d)
-    return result
+class AlertRow(Base):
+    """ORM mapping for the ``alerts`` table.
+
+    Stores triage metadata for a single security alert.  The ``enrichment``
+    and ``notes`` columns use JSON-encoded ``Text`` fields rather than
+    relational sub-tables to keep the schema flat and migration-friendly for
+    the SQLite development backend.
+    """
+
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(500), nullable=False)
+    severity = Column(String(10), nullable=False)
+    source = Column(String(100), nullable=False)
+    ioc = Column(String(500), default="")
+    status = Column(String(50), default="Open")
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+    analyst = Column(String(100), default="")
+    fp_reason = Column(String(1000), default="")
+    # Stored as a JSON-encoded object; deserialized on read by _row_to_dict.
+    enrichment = Column(Text, default="{}")
+    # Stored as a JSON-encoded array of note objects; appended to in add_note().
+    notes = Column(Text, default="[]")
+
+
+def _row_to_dict(row: AlertRow) -> dict:
+    """Convert an ``AlertRow`` ORM instance to a plain dictionary.
+
+    Handles ``None`` defaults for nullable string columns and deserializes
+    the JSON-encoded ``enrichment`` and ``notes`` columns.  The resulting
+    dict shape matches the API response schema so callers don't need to
+    know about the ORM layer.
+
+    Args:
+        row: A hydrated ``AlertRow`` instance.
+
+    Returns:
+        Dictionary with all alert fields; ``enrichment`` is a ``dict`` and
+        ``notes`` is a ``list``.
+    """
+    return {
+        "id": row.id,
+        "title": row.title,
+        "severity": row.severity,
+        "source": row.source,
+        "ioc": row.ioc or "",
+        "status": row.status,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "analyst": row.analyst or "",
+        "fp_reason": row.fp_reason or "",
+        "enrichment": json.loads(row.enrichment) if row.enrichment else {},
+        "notes": json.loads(row.notes) if row.notes else [],
+    }
 
 
 class AlertStore:
-    """Alert storage backed by SQLite or MySQL."""
+    """Thread-safe alert persistence layer backed by SQLAlchemy.
+
+    Supports two backends selected at construction time:
+
+    * **SQLite** (default) — file-based, zero-config, suitable for local dev.
+      The database path can be set via the ``db_path`` argument or the
+      ``ALERTFLOW_DB`` environment variable (defaults to ``alertflow.db``).
+    * **MySQL** — activated by passing ``mysql_url``.  The URL is forwarded
+      directly to ``create_engine`` so it may contain pool settings.
+
+    All public methods are guarded by a re-entrant lock (``threading.RLock``)
+    so that multiple FastAPI worker threads can safely share a single store
+    instance.  Sessions are scoped to individual method calls and closed in a
+    ``with`` block to guarantee connection release even on exceptions.
+    """
 
     def __init__(self, db_path: str | None = None, *, mysql_url: str | None = None):
-        self._backend = "mysql" if mysql_url else "sqlite"
+        """Initialise the store, create tables if they don't exist.
+
+        Args:
+            db_path: Filesystem path for the SQLite database file.  Ignored
+                when ``mysql_url`` is provided.  Falls back to the
+                ``ALERTFLOW_DB`` environment variable, then ``alertflow.db``.
+            mysql_url: Full SQLAlchemy connection URL for MySQL (e.g.
+                ``mysql+pymysql://user:pass@host/db``).  When provided the
+                SQLite path is ignored entirely.
+        """
         self._lock = threading.RLock()
 
-        if self._backend == "mysql":
-            import urllib.parse
-            parsed = urllib.parse.urlparse(mysql_url)
-            self._mysql_config = {
-                "host": parsed.hostname or "localhost",
-                "port": parsed.port or 3306,
-                "user": parsed.username or "root",
-                "password": parsed.password or "",
-                "database": (parsed.path or "/alertflow").lstrip("/"),
-                "charset": "utf8mb4",
-                "autocommit": False,
-            }
-            self._conn = None
-            self._initialized = False
+        if mysql_url:
+            url = mysql_url
         else:
             if db_path is None:
                 db_path = os.environ.get("ALERTFLOW_DB", "alertflow.db")
             self.db_path = Path(db_path)
-            self._conn: sqlite3.Connection | None = None
-            self._initialized = False
+            url = f"sqlite:///{self.db_path}"
 
-    def _get_conn(self):
-        if self._initialized and self._conn is not None:
-            return self._conn
-        with self._lock:
-            if self._conn is not None:
-                return self._conn
-            if self._backend == "mysql":
-                self._conn = self._connect_mysql()
-                self._init_db_mysql()
-            else:
-                self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-                self._conn.row_factory = sqlite3.Row
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA foreign_keys=ON")
-                self._init_db_sqlite()
-            self._initialized = True
-            return self._conn
+        self._engine = create_engine(
+            url,
+            echo=False,
+            # pool_pre_ping verifies connections are alive before use,
+            # preventing stale-connection errors after idle periods.
+            pool_pre_ping=True,
+            # SQLite is not safe for cross-thread connections by default;
+            # we enforce safety at the application level via RLock instead.
+            connect_args={"check_same_thread": False} if "sqlite" in url else {},
+        )
 
-    def _connect_mysql(self):
-        try:
-            import aiomysql
-        except ImportError:
-            raise ImportError("aiomysql is required for MySQL backend: pip install aiomysql")
-        import asyncio
+        if "sqlite" in url:
+            # Enable WAL journaling and foreign-key enforcement for every
+            # new connection.  WAL allows concurrent reads during writes,
+            # drastically reducing "database is locked" errors under load.
+            @event.listens_for(self._engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _):
+                dbapi_conn.execute("PRAGMA journal_mode=WAL")
+                dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
-        cfg = self._mysql_config.copy()
+        # create_all is idempotent — safe to call on every startup.
+        Base.metadata.create_all(self._engine)
+        self._SessionFactory = sessionmaker(bind=self._engine)
+        self._initialized = True
 
-        async def _connect():
-            return await aiomysql.connect(
-                host=cfg["host"],
-                port=cfg["port"],
-                user=cfg["user"],
-                password=cfg["password"],
-                db=cfg["database"],
-                charset=cfg["charset"],
-                autocommit=False,
-            )
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                conn = pool.submit(asyncio.run, _connect()).result()
-        else:
-            conn = asyncio.run(_connect())
-        return conn
-
-    def _init_db_sqlite(self):
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                source TEXT NOT NULL,
-                ioc TEXT DEFAULT '',
-                status TEXT DEFAULT 'Open',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                analyst TEXT DEFAULT '',
-                fp_reason TEXT DEFAULT '',
-                enrichment TEXT DEFAULT '{}',
-                notes TEXT DEFAULT '[]'
-            )
-        """)
-        self._conn.commit()
-
-    def _init_db_mysql(self):
-        cur = self._conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                title VARCHAR(500) NOT NULL,
-                severity VARCHAR(10) NOT NULL,
-                source VARCHAR(100) NOT NULL,
-                ioc VARCHAR(500) DEFAULT '',
-                status VARCHAR(50) DEFAULT 'Open',
-                created_at VARCHAR(50) NOT NULL,
-                updated_at VARCHAR(50) NOT NULL,
-                analyst VARCHAR(100) DEFAULT '',
-                fp_reason VARCHAR(1000) DEFAULT '',
-                enrichment LONGTEXT DEFAULT '{}',
-                notes LONGTEXT DEFAULT '[]'
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """)
-        self._conn.commit()
+    def _session(self) -> Session:
+        """Create a short-lived ORM session bound to this store's engine."""
+        return self._SessionFactory()
 
     def _now(self) -> str:
+        """Return the current UTC time as an ISO 8601 ``Z``-suffixed string."""
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _cutoff(self, seconds: int = 0, days: int = 0) -> str:
-        """Return a cutoff timestamp in the same format as _now()."""
+        """Return a UTC timestamp offset into the past, formatted identically to ``_now()``.
+
+        Used to build ``WHERE`` clauses for time-range queries (e.g.
+        duplicate detection, old-alert cleanup).
+        """
         dt = datetime.now(timezone.utc) - timedelta(seconds=seconds, days=days)
         return dt.isoformat().replace("+00:00", "Z")
 
     def add_alert(self, title: str, severity: str, source: str, ioc: str = "", enrichment: dict | None = None) -> dict:
+        """Insert a new alert and return the persisted record as a dict.
+
+        The new alert always starts with ``status="Open"``.  The ``enrichment``
+        dict (if provided) is JSON-serialised into the ``enrichment`` column.
+
+        Args:
+            title: Short alert heading.
+            severity: One of the severity labels (e.g. ``"Critical"``, ``"High"``).
+            source: Identifier of the originating system.
+            ioc: Optional indicator of compromise associated with the alert.
+            enrichment: Optional dict of enrichment data (IP intel, hashes, etc.).
+
+        Returns:
+            The newly created alert as a plain dict (includes auto-generated
+            ``id`` and timestamps).
+        """
         now = self._now()
-        enrichment_json = json.dumps(enrichment) if enrichment else "{}"
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute(
-                    """INSERT INTO alerts (title, severity, source, ioc, status, created_at, updated_at, enrichment)
-                       VALUES (%s, %s, %s, %s, 'Open', %s, %s, %s)""",
-                    (title, severity, source, ioc, now, now, enrichment_json),
+            with self._session() as session:
+                alert = AlertRow(
+                    title=title,
+                    severity=severity,
+                    source=source,
+                    ioc=ioc,
+                    status="Open",
+                    created_at=now,
+                    updated_at=now,
+                    enrichment=json.dumps(enrichment) if enrichment else "{}",
                 )
-                conn.commit()
-                cur.execute("SELECT * FROM alerts WHERE id = %s", (cur.lastrowid,))
-                return _parse_mysql_row(cur)
-            else:
-                cur = conn.execute(
-                    """INSERT INTO alerts (title, severity, source, ioc, status, created_at, updated_at, enrichment)
-                       VALUES (?, ?, ?, ?, 'Open', ?, ?, ?)""",
-                    (title, severity, source, ioc, now, now, enrichment_json),
-                )
-                conn.commit()
-                row = conn.execute("SELECT * FROM alerts WHERE id = ?", (cur.lastrowid,)).fetchone()
-                return _alert_from_row(row)
+                session.add(alert)
+                session.commit()
+                # Refresh to populate the auto-generated ``id``.
+                session.refresh(alert)
+                return _row_to_dict(alert)
 
     def update_status(self, alert_id: int, status: str, analyst: str = "", fp_reason: str = "") -> Optional[dict]:
+        """Transition an alert to a new status and optionally record the analyst.
+
+        Args:
+            alert_id: Primary key of the alert to update.
+            status: New status value (e.g. ``"Triage"``, ``"Closed"``,
+                ``"Closed - FP"``).
+            analyst: Username of the analyst performing the transition.
+            fp_reason: Reason when the alert is being closed as a false
+                positive; ignored for non-FP statuses.
+
+        Returns:
+            The updated alert dict, or ``None`` if no alert matches
+            ``alert_id``.
+        """
         now = self._now()
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("SELECT analyst, fp_reason FROM alerts WHERE id = %s", (alert_id,))
-                row = cur.fetchone()
-                if row is None:
+            with self._session() as session:
+                alert = session.get(AlertRow, alert_id)
+                if alert is None:
                     return None
-                current_analyst = row[0] or ""
-                current_fp = row[1] or ""
-                final_analyst = analyst if analyst else current_analyst
-                final_fp = fp_reason if fp_reason else current_fp
-                cur.execute(
-                    "UPDATE alerts SET status=%s, updated_at=%s, analyst=%s, fp_reason=%s WHERE id=%s",
-                    (status, now, final_analyst, final_fp, alert_id),
-                )
-                conn.commit()
-                cur.execute("SELECT * FROM alerts WHERE id = %s", (alert_id,))
-                return _parse_mysql_row(cur)
-            else:
-                row = conn.execute("SELECT analyst, fp_reason FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                if row is None:
-                    return None
-                current_analyst = row["analyst"] or ""
-                current_fp = row["fp_reason"] or ""
-                final_analyst = analyst if analyst else current_analyst
-                final_fp = fp_reason if fp_reason else current_fp
-                conn.execute(
-                    "UPDATE alerts SET status=?, updated_at=?, analyst=?, fp_reason=? WHERE id=?",
-                    (status, now, final_analyst, final_fp, alert_id),
-                )
-                conn.commit()
-                updated = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                return _alert_from_row(updated)
+                alert.status = status
+                alert.updated_at = now
+                if analyst:
+                    alert.analyst = analyst
+                if fp_reason:
+                    alert.fp_reason = fp_reason
+                session.commit()
+                session.refresh(alert)
+                return _row_to_dict(alert)
 
     def update_enrichment(self, alert_id: int, enrichment: dict) -> Optional[dict]:
+        """Replace the enrichment payload on an existing alert.
+
+        This is a full overwrite rather than a merge — callers are expected
+        to read, modify, then write back the complete dict.
+
+        Args:
+            alert_id: Primary key of the alert.
+            enrichment: New enrichment dict (will be JSON-serialised).
+
+        Returns:
+            The updated alert dict, or ``None`` if the alert was not found.
+        """
         now = self._now()
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("SELECT id FROM alerts WHERE id = %s", (alert_id,))
-                if cur.fetchone() is None:
+            with self._session() as session:
+                alert = session.get(AlertRow, alert_id)
+                if alert is None:
                     return None
-                cur.execute(
-                    "UPDATE alerts SET enrichment=%s, updated_at=%s WHERE id=%s",
-                    (json.dumps(enrichment), now, alert_id),
-                )
-                conn.commit()
-                cur.execute("SELECT * FROM alerts WHERE id = %s", (alert_id,))
-                return _parse_mysql_row(cur)
-            else:
-                row = conn.execute("SELECT id FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                if row is None:
-                    return None
-                conn.execute(
-                    "UPDATE alerts SET enrichment=?, updated_at=? WHERE id=?",
-                    (json.dumps(enrichment), now, alert_id),
-                )
-                conn.commit()
-                updated = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                return _alert_from_row(updated)
+                alert.enrichment = json.dumps(enrichment)
+                alert.updated_at = now
+                session.commit()
+                session.refresh(alert)
+                return _row_to_dict(alert)
 
     def delete_alert(self, alert_id: int) -> bool:
+        """Hard-delete an alert by primary key.
+
+        Unlike ``delete_old_alerts`` which uses a bulk ``DELETE`` statement,
+        this loads the row first so SQLAlchemy's identity map and any cascade
+        rules are respected.
+
+        Returns:
+            ``True`` if the alert existed and was removed, ``False`` otherwise.
+        """
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("DELETE FROM alerts WHERE id = %s", (alert_id,))
-                conn.commit()
-                return cur.rowcount > 0
-            else:
-                cur = conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
-                conn.commit()
-                return cur.rowcount > 0
+            with self._session() as session:
+                alert = session.get(AlertRow, alert_id)
+                if alert is None:
+                    return False
+                session.delete(alert)
+                session.commit()
+                return True
 
     def get_alert(self, alert_id: int) -> Optional[dict]:
+        """Fetch a single alert by primary key.
+
+        Returns:
+            Alert dict or ``None`` if not found.
+        """
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("SELECT * FROM alerts WHERE id = %s", (alert_id,))
-                return _parse_mysql_row(cur)
-            else:
-                row = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                return _alert_from_row(row) if row else None
+            with self._session() as session:
+                alert = session.get(AlertRow, alert_id)
+                return _row_to_dict(alert) if alert else None
 
     def list_alerts(self, status: Optional[str] = None, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
+        """List alerts with optional status filter, pagination, and total count.
+
+        Results are ordered by ascending ``id`` (creation order).
+
+        Args:
+            status: If provided, only return alerts matching this status.
+            limit: Maximum number of alerts to return (page size).
+            offset: Number of alerts to skip (for pagination).
+
+        Returns:
+            A ``(alerts, total)`` tuple where *alerts* is the page of alert
+            dicts and *total* is the count of all matching rows (before
+            pagination).
+        """
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
+            with self._session() as session:
+                from sqlalchemy import select, func
+
+                stmt = select(AlertRow)
+                count_stmt = select(func.count(AlertRow.id))
+
                 if status:
-                    cur.execute("SELECT COUNT(*) FROM alerts WHERE status = %s", (status,))
-                    total = cur.fetchone()[0]
-                    cur.execute(
-                        "SELECT * FROM alerts WHERE status = %s ORDER BY id LIMIT %s OFFSET %s",
-                        (status, limit, offset),
-                    )
-                else:
-                    cur.execute("SELECT COUNT(*) FROM alerts")
-                    total = cur.fetchone()[0]
-                    cur.execute("SELECT * FROM alerts ORDER BY id LIMIT %s OFFSET %s", (limit, offset))
-                return _parse_mysql_rows(cur), total
-            else:
-                if status:
-                    total = conn.execute("SELECT COUNT(*) FROM alerts WHERE status = ?", (status,)).fetchone()[0]
-                    rows = conn.execute(
-                        "SELECT * FROM alerts WHERE status = ? ORDER BY id LIMIT ? OFFSET ?",
-                        (status, limit, offset),
-                    ).fetchall()
-                else:
-                    total = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
-                    rows = conn.execute(
-                        "SELECT * FROM alerts ORDER BY id LIMIT ? OFFSET ?",
-                        (limit, offset),
-                    ).fetchall()
-                return [_alert_from_row(r) for r in rows], total
+                    stmt = stmt.where(AlertRow.status == status)
+                    count_stmt = count_stmt.where(AlertRow.status == status)
+
+                # Compute total count before applying LIMIT/OFFSET.
+                total = session.scalar(count_stmt)
+                stmt = stmt.order_by(AlertRow.id).limit(limit).offset(offset)
+                rows = session.scalars(stmt).all()
+                return [_row_to_dict(r) for r in rows], total
 
     def add_note(self, alert_id: int, note: str, analyst: str = "") -> Optional[dict]:
+        """Append a timestamped analyst note to an alert.
+
+        Notes are stored as a JSON array in the ``notes`` column.  Each call
+        reads the current array, appends a new entry, and writes it back —
+        the RLock prevents lost updates from concurrent calls.
+
+        Args:
+            alert_id: Primary key of the alert.
+            note: Free-text note body.
+            analyst: Username of the note author (defaults to ``"unknown"``).
+
+        Returns:
+            The updated alert dict, or ``None`` if not found.
+        """
         now = self._now()
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("SELECT notes FROM alerts WHERE id = %s", (alert_id,))
-                row = cur.fetchone()
-                if row is None:
+            with self._session() as session:
+                alert = session.get(AlertRow, alert_id)
+                if alert is None:
                     return None
-                notes = json.loads(row[0]) if row[0] else []
+                notes = json.loads(alert.notes) if alert.notes else []
                 notes.append({"timestamp": now, "analyst": analyst or "unknown", "note": note})
-                cur.execute(
-                    "UPDATE alerts SET notes=%s, updated_at=%s WHERE id=%s",
-                    (json.dumps(notes), now, alert_id),
-                )
-                conn.commit()
-                cur.execute("SELECT * FROM alerts WHERE id = %s", (alert_id,))
-                return _parse_mysql_row(cur)
-            else:
-                row = conn.execute("SELECT notes FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                if row is None:
-                    return None
-                notes = json.loads(row["notes"]) if row["notes"] else []
-                notes.append({"timestamp": now, "analyst": analyst or "unknown", "note": note})
-                conn.execute(
-                    "UPDATE alerts SET notes=?, updated_at=? WHERE id=?",
-                    (json.dumps(notes), now, alert_id),
-                )
-                conn.commit()
-                updated = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
-                return _alert_from_row(updated)
+                alert.notes = json.dumps(notes)
+                alert.updated_at = now
+                session.commit()
+                session.refresh(alert)
+                return _row_to_dict(alert)
 
     def count_alerts(self) -> int:
+        """Return the total number of alerts in the database."""
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) FROM alerts")
-                return cur.fetchone()[0]
-            return conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+            with self._session() as session:
+                from sqlalchemy import func, select
+                return session.scalar(select(func.count(AlertRow.id)))
 
     def delete_old_alerts(self, days: int = 90) -> int:
-        """Delete alerts older than N days. Returns count deleted."""
+        """Bulk-delete closed alerts older than ``days`` days.
+
+        Only alerts whose ``status`` is ``"Closed"`` or ``"Closed - FP"``
+        are removed.  Open or triaged alerts are never pruned regardless of
+        age — this prevents data loss on active investigations.
+
+        Uses a bulk ``DELETE`` statement rather than loading rows individually
+        for efficiency when the table is large.
+
+        Args:
+            days: Retention period in days.  Alerts created more than this
+                many days ago (and already closed) are deleted.
+
+        Returns:
+            Number of rows deleted.
+        """
         cutoff = self._cutoff(days=days)
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute("DELETE FROM alerts WHERE created_at < %s AND status IN ('Closed', 'Closed - FP')", (cutoff,))
-                conn.commit()
-                return cur.rowcount
-            else:
-                cur = conn.execute(
-                    "DELETE FROM alerts WHERE created_at < ? AND status IN ('Closed', 'Closed - FP')",
-                    (cutoff,),
+            with self._session() as session:
+                from sqlalchemy import delete
+                stmt = (
+                    delete(AlertRow)
+                    .where(AlertRow.created_at < cutoff)
+                    .where(AlertRow.status.in_(["Closed", "Closed - FP"]))
                 )
-                conn.commit()
-                return cur.rowcount
+                result = session.execute(stmt)
+                session.commit()
+                return result.rowcount
 
     def find_duplicate(self, title: str, source: str, ioc: str = "", within_seconds: int = 300) -> Optional[dict]:
-        """Check for a recent duplicate alert (same title+source+IOC within N seconds)."""
+        """Check for an existing alert with matching attributes within a time window.
+
+        Duplicate detection is critical for alert-fatigue reduction — the
+        same IOC firing repeatedly from the same source within a short period
+        should be collapsed into a single alert.
+
+        Args:
+            title: Alert title to match.
+            source: Source system to match.
+            ioc: IOC string to match (empty string matches empty IOC).
+            within_seconds: Time window in seconds; alerts older than this
+                are ignored.
+
+        Returns:
+            The most recent matching alert dict, or ``None`` if no duplicate
+            exists.
+        """
         cutoff = self._cutoff(seconds=within_seconds)
         with self._lock:
-            conn = self._get_conn()
-            if self._backend == "mysql":
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT * FROM alerts WHERE title=%s AND source=%s AND ioc=%s AND created_at > %s ORDER BY id DESC LIMIT 1",
-                    (title, source, ioc, cutoff),
+            with self._session() as session:
+                from sqlalchemy import select
+                stmt = (
+                    select(AlertRow)
+                    .where(AlertRow.title == title)
+                    .where(AlertRow.source == source)
+                    .where(AlertRow.ioc == ioc)
+                    .where(AlertRow.created_at > cutoff)
+                    .order_by(AlertRow.id.desc())
+                    .limit(1)
                 )
-                return _parse_mysql_row(cur)
-            else:
-                row = conn.execute(
-                    "SELECT * FROM alerts WHERE title=? AND source=? AND ioc=? AND created_at > ? ORDER BY id DESC LIMIT 1",
-                    (title, source, ioc, cutoff),
-                ).fetchone()
-                return _alert_from_row(row) if row else None
+                alert = session.scalars(stmt).first()
+                return _row_to_dict(alert) if alert else None
 
     def migrate_from_json(self, json_path: str) -> int:
-        """Import alerts from a JSON file. Returns count migrated."""
+        """Import alerts from a legacy JSON file into the database.
+
+        Expects the JSON to have an ``"alerts"`` key containing a list of
+        alert objects with the same field names as ``AlertRow``.  Uses
+        ``session.merge()`` so existing rows (matched by ``id``) are updated
+        rather than causing constraint violations.
+
+        This method is intended for one-time data migration from the original
+        flat-file storage and should not be called in normal operation.
+
+        Args:
+            json_path: Path to the JSON file to import.
+
+        Returns:
+            Number of alerts imported/merged.
+        """
         path = Path(json_path)
         if not path.exists():
             return 0
@@ -429,48 +462,35 @@ class AlertStore:
             return 0
         count = 0
         with self._lock:
-            conn = self._get_conn()
-            for alert in alerts:
-                notes = json.dumps(alert.get("notes", []))
-                enrichment = json.dumps(alert.get("enrichment", {}))
-                if self._backend == "mysql":
-                    cur = conn.cursor()
-                    cur.execute(
-                        """INSERT INTO alerts
-                           (id, title, severity, source, ioc, status, created_at, updated_at,
-                            analyst, fp_reason, enrichment, notes)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                        (
-                            alert["id"], alert["title"], alert["severity"], alert["source"],
-                            alert.get("ioc", ""), alert.get("status", "Open"),
-                            alert.get("created_at", self._now()),
-                            alert.get("updated_at", self._now()),
-                            alert.get("analyst", ""), alert.get("fp_reason", ""),
-                            enrichment, notes,
-                        ),
+            with self._session() as session:
+                for alert in alerts:
+                    row = AlertRow(
+                        id=alert["id"],
+                        title=alert["title"],
+                        severity=alert["severity"],
+                        source=alert["source"],
+                        ioc=alert.get("ioc", ""),
+                        status=alert.get("status", "Open"),
+                        created_at=alert.get("created_at", self._now()),
+                        updated_at=alert.get("updated_at", self._now()),
+                        analyst=alert.get("analyst", ""),
+                        fp_reason=alert.get("fp_reason", ""),
+                        enrichment=json.dumps(alert.get("enrichment", {})),
+                        notes=json.dumps(alert.get("notes", [])),
                     )
-                else:
-                    conn.execute(
-                        """INSERT INTO alerts
-                           (id, title, severity, source, ioc, status, created_at, updated_at,
-                            analyst, fp_reason, enrichment, notes)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            alert["id"], alert["title"], alert["severity"], alert["source"],
-                            alert.get("ioc", ""), alert.get("status", "Open"),
-                            alert.get("created_at", self._now()),
-                            alert.get("updated_at", self._now()),
-                            alert.get("analyst", ""), alert.get("fp_reason", ""),
-                            enrichment, notes,
-                        ),
-                    )
-                count += 1
-            conn.commit()
+                    # merge() performs INSERT OR UPDATE based on primary key,
+                    # making the import idempotent.
+                    session.merge(row)
+                    count += 1
+                session.commit()
         return count
 
     def close(self):
+        """Dispose of the connection pool and mark the store as shut down.
+
+        After calling this, no further database operations should be
+        attempted on this instance.
+        """
         with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
-                self._initialized = False
+            self._engine.dispose()
+            self._initialized = False

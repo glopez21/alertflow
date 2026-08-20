@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Hash reputation lookup for alert triage."""
+"""Hash reputation lookup module for alert triage.
+
+Detects common file-hash types (MD5, SHA-1, SHA-256, SHA-512), matches the
+leading hex prefix against a static reputation database of known-malicious
+and known-benign samples, and provides a simulated VirusTotal detection
+summary.
+
+Design notes:
+    - Reputation matching uses the first 8 hex characters as a prefix key.
+      This is a lightweight stand-in for a real hash-reputation API (VirusTotal,
+      MalwareBazaar, etc.).
+    - All lookup tables are static demo data — swap them for live API calls
+      in production.
+"""
 
 import argparse
 import json
@@ -9,7 +22,15 @@ from utils import utcnow_iso
 
 
 def enrich_hash(hash_value: str) -> dict:
-    """Enrich hash with available context."""
+    """Enrich a file hash with type detection, reputation, and file metadata.
+
+    Args:
+        hash_value: A hex-encoded hash string.
+
+    Returns:
+        A dict containing ``hash_type``, a ``checks`` sub-dict with
+        ``reputation``, ``vt_lookup``, and ``file_info`` results.
+    """
     result = {
         "hash": hash_value,
         "hash_type": detect_hash_type(hash_value),
@@ -25,7 +46,16 @@ def enrich_hash(hash_value: str) -> dict:
 
 
 def detect_hash_type(hash_value: str) -> str:
-    """Detect hash type based on length."""
+    """Identify the hash algorithm from the hex string length.
+
+    Supported lengths: 32 (MD5), 40 (SHA-1), 64 (SHA-256), 128 (SHA-512).
+
+    Args:
+        hash_value: A hex-encoded hash string.
+
+    Returns:
+        A lowercase algorithm name or ``"unknown"``.
+    """
     if re.match(r"^[a-fA-F0-9]{32}$", hash_value):
         return "md5"
     elif re.match(r"^[a-fA-F0-9]{40}$", hash_value):
@@ -39,7 +69,19 @@ def detect_hash_type(hash_value: str) -> str:
 
 
 def check_reputation(hash_value: str) -> dict:
-    """Check hash against known database."""
+    """Look up *hash_value* in the static reputation database.
+
+    Matching is done on the first 8 hex characters (the "prefix").  This
+    trades precision for speed and mirrors how real-world prefix-based
+    reputation feeds (e.g. Imphash/SSDEEP partial matches) work.
+
+    Args:
+        hash_value: A hex-encoded hash string.
+
+    Returns:
+        A dict with ``reputation``, ``name``, and optionally ``family``
+        and ``confidence`` keys.
+    """
     malicious_patterns = {
         "aadea647": {"name": "mimikatz", "family": "credential_theft", "reputation": "malicious"},
         "bebecacd": {"name": "mimikatz", "family": "credential_theft", "reputation": "malicious"},
@@ -48,6 +90,7 @@ def check_reputation(hash_value: str) -> dict:
         "badc0de": {"name": "cobalt_strike", "family": " RAT", "reputation": "malicious"},
     }
 
+    # Use the leading 8 hex chars as the lookup key.
     hash_prefix = hash_value[:8].lower()
     if hash_prefix in malicious_patterns:
         return malicious_patterns[hash_prefix]
@@ -64,7 +107,18 @@ def check_reputation(hash_value: str) -> dict:
 
 
 def check_virustotal(hash_value: str) -> dict:
-    """Simulate VirusTotal lookup."""
+    """Return a simulated VirusTotal detection summary for *hash_value*.
+
+    In production, replace with a real ``requests.get`` call to the
+    VirusTotal /v3/files endpoint.
+
+    Args:
+        hash_value: A hex-encoded hash string.
+
+    Returns:
+        A dict with ``detection`` counts and ``vendors`` list (or a
+        ``note`` when the hash is not in the simulated database).
+    """
     suspicious_hashes = {
         "aadea647": {"malicious": 45, "undetected": 5, "total": 50},
         "bebecacd": {"malicious": 38, "undetected": 12, "total": 50},
@@ -90,7 +144,17 @@ def check_virustotal(hash_value: str) -> dict:
 
 
 def get_file_info(hash_value: str) -> dict:
-    """Get file information based on hash."""
+    """Retrieve basic file metadata associated with *hash_value*.
+
+    Maps known hash prefixes to static file-format information.  Extend
+    the ``file_signatures`` dict to cover more samples.
+
+    Args:
+        hash_value: A hex-encoded hash string.
+
+    Returns:
+        A dict with ``format``, ``size``, and optionally ``description``.
+    """
     file_signatures = {
         "aadea647": {"format": "PE32", "size": "358KB", "description": "Executable"},
         "bebecacd": {"format": "DLL", "size": "1.2MB", "description": "Dynamic Link Library"},

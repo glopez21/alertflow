@@ -193,38 +193,78 @@ export ALERTFLOW_MYSQL_URL=mysql://alertflow_user:password@localhost:3306/alertf
 
 ## Workflow
 
-```
-┌───────────────────────────────────────────────────────────┐
-│                    AlertFlow                              │
-├─────────────┬─────────────┬─────────────┬─────────────────┤
-│   REVIEW    │   VALIDATE  │   ENRICH    │   DOCUMENT      │
-│ 2 minutes   │   5 minutes │ 10 minutes  │   5 minutes     │
-├─────────────┴─────────────┴─────────────┴─────────────────┤
-│  - Confirm    - Check FP    - IP/Domain   - Timeline      │
-│  - Severity   - Allowlist   - Hash/User   - IOCs          │
-│  - Categorize - Baseline   - Threat Feeds- Evidence       │
-└───────────────────────────────────────────────────────────┘
-                          │
-                    ┌─────┴────┐
-                    │ ESCALATE │
-                    │  Close   │
-                    └──────────┘
+```mermaid
+flowchart LR
+    subgraph AlertFlow["AlertFlow — 5-Phase Triage"]
+        direction LR
+        R["1. REVIEW<br/>Confirm alert<br/>Check severity"]
+        V["2. VALIDATE<br/>FP check<br/>Allowlist / baseline"]
+        E["3. ENRICH<br/>IP / Domain<br/>Hash / User"]
+        D["4. DOCUMENT<br/>Timeline<br/>IOCs / Evidence"]
+        ESC["5. ESCALATE<br/>Close / FP<br/>Notify"]
+    end
+
+    R --> V --> E --> D --> ESC
+
+    style AlertFlow fill:#FFFDE7,stroke:#FFC107
 ```
 
 ---
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph INGEST["Ingestion"]
+        SIEM["SIEM<br/>Splunk / ES"]
+        KAFKA["Kafka Consumer"]
+        CLI["CLI / API"]
+    end
+
+    subgraph CORE["AlertFlow Core"]
+        TRIAGE["Triage Workflow<br/>REVIEW → VALIDATE → ENRICH<br/>→ DOCUMENT → ESCALATE"]
+        DB[(SQLite / MySQL)]
+        ENRICH["Enrichment Pipeline<br/>IP / Domain / Hash / User"]
+        CB{{"Circuit Breaker<br/>+ Retry"}}
+    end
+
+    subgraph EXT["External Integrations"]
+        TP["ThreatPulse<br/>Webhook"]
+        AF["AdminFlow<br/>AD Disable"]
+        AUGUR["Augur / n3xus<br/>Events"]
+        TICKET["Ticket Creator<br/>Jira / ServiceNow"]
+        FEED["Feed Poller<br/>VT / AbuseIPDB / OTX"]
+    end
+
+    subgraph API_L["REST API"]
+        CRUD["/api/alerts<br/>CRUD + Pagination"]
+        HEALTH["/api/health"]
+        METRICS["/metrics<br/>Prometheus"]
+    end
+
+    SIEM --> TRIAGE
+    KAFKA --> TRIAGE
+    CLI --> TRIAGE
+
+    TRIAGE --> ENRICH
+    ENRICH --> CB
+    CB -->|"external APIs"| CB
+    TRIAGE --> DB
+    DB --> API_L
+
+    TRIAGE -->|"push alerts"| TP
+    TRIAGE -->|"disable user"| AF
+    TRIAGE -->|"event push"| AUGUR
+    ENRICH -->|"create ticket"| TICKET
+    ENRICH -->|"check IOCs"| FEED
+
+    style INGEST fill:#E8F4FD,stroke:#4A90D9
+    style CORE fill:#FFF3E0,stroke:#F5A623
+    style EXT fill:#E8F5E9,stroke:#4CAF50
+    style API_L fill:#E3F2FD,stroke:#2196F3
 ```
-Logs ──► [LogSentry] ──detections──► [AlertFlow] ──triaged alerts──► [ThreatPulse]
-          (log parser      (triage CLI,        (incidents, IOCs,
-          + detection)      REST API)           notifications)
-                                    │
-                                    │ user disable / lock
-                                    ▼
-                               [AdminFlow]
-                           (AD automation)
-```
+
+> Full diagram: [`docs/architecture.mmd`](docs/architecture.mmd)
 
 ---
 
@@ -294,7 +334,10 @@ alertflow/
 │   ├── ticket_creator.py
 │   ├── feed_poller.py
 │   └── __main__.py
-├── tests/                     # 148 tests
+├── tests/                     # 162 tests
+├── runbooks/                  # Alert handling procedures
+├── docs/                      # Architecture diagrams
+│   └── architecture.mmd       # Mermaid flow diagram
 ├── runbooks/                  # Alert handling procedures
 ├── templates/                 # Ticket templates
 ├── checklists/                # Quick references

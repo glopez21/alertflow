@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Domain enrichment script for alert triage."""
+"""Domain enrichment module for alert triage.
+
+Resolves DNS records, performs lightweight WHOIS analysis (TLD reputation),
+checks the domain against known malicious/benign lists, and flags suspicious
+naming patterns such as DGA-like strings and social-engineering keywords.
+
+Design notes:
+    - DNS resolution uses ``socket.getaddrinfo`` for A/AAAA records and
+      optionally ``dnspython`` for MX/NS/TXT/CNAME when the library is
+      installed.  The import is guarded so the module remains usable without it.
+    - WHOIS and reputation checks are simulated with static lookup tables.
+      Production deployments should query live WHOIS/Threat-Intel APIs.
+"""
 
 import argparse
 import json
@@ -11,7 +23,15 @@ from utils import utcnow_iso
 
 
 def enrich_domain(domain: str) -> dict:
-    """Enrich domain with available context."""
+    """Run all available enrichment checks against *domain*.
+
+    Args:
+        domain: A fully-qualified domain name to enrich.
+
+    Returns:
+        A dict with a ``checks`` sub-dict containing DNS, WHOIS, reputation,
+        and suspicious-pattern results.
+    """
     result = {
         "domain": domain,
         "timestamp": utcnow_iso(),
@@ -27,13 +47,26 @@ def enrich_domain(domain: str) -> dict:
 
 
 def get_dns_records(domain: str) -> dict:
-    """Get DNS records for domain."""
+    """Resolve common DNS record types for *domain*.
+
+    A and AAAA records are always resolved via ``socket.getaddrinfo``.
+    MX, NS, TXT, and CNAME are resolved only when ``dnspython`` is
+    available; a warning is emitted otherwise.
+
+    Args:
+        domain: The domain to resolve.
+
+    Returns:
+        A dict mapping record-type keys (``a``, ``aaaa``, ``mx``, …)
+        to lists of string values.
+    """
     records = {"a": [], "aaaa": [], "mx": [], "ns": [], "txt": [], "cname": []}
 
     try:
         result = socket.getaddrinfo(domain, None)
         for r in result:
             ip = r[4][0]
+            # Distinguish IPv4 from IPv6 by the presence of a colon.
             if ":" in ip:
                 records["aaaa"].append(ip)
             else:
@@ -51,13 +84,26 @@ def get_dns_records(domain: str) -> dict:
             except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
                 pass
     except ImportError:
+        # dnspython is an optional dependency — advanced record types are
+        # silently skipped with a deprecation-style warning.
         warnings.warn("dnspython not installed — advanced DNS records unavailable (install with: uv add dnspython)")
 
     return records
 
 
 def get_whois(domain: str) -> dict:
-    """Get basic WHOIS information (simulated)."""
+    """Perform lightweight WHOIS-style analysis on *domain*.
+
+    Extracts the TLD and checks it against a curated list of suspicious
+    free/cheap TLDs frequently abused by threat actors (e.g. .xyz, .tk, .ml).
+
+    Args:
+        domain: The domain to analyse.
+
+    Returns:
+        A dict with ``registered``, ``tld``, and optionally ``suspicious_tld``
+        and ``suspicious_reason`` keys.
+    """
     suspicious_tlds = [".xyz", ".top", ".pw", ".tk", ".ml", ".ga", ".cf", ".gq", ".buzz"]
 
     whois = {
@@ -65,6 +111,7 @@ def get_whois(domain: str) -> dict:
         "tld": domain.split(".")[-1] if "." in domain else "unknown",
     }
 
+    # Flag free/cheap TLDs commonly associated with phishing and malware.
     domain_lower = domain.lower()
     for tld in suspicious_tlds:
         if domain_lower.endswith(tld):
@@ -76,7 +123,18 @@ def get_whois(domain: str) -> dict:
 
 
 def check_reputation(domain: str) -> dict:
-    """Check domain reputation."""
+    """Match *domain* against static known-malicious and known-benign lists.
+
+    In production this should be replaced with a live threat-intelligence
+    feed (e.g. VirusTotal, AbuseIPDB, URLhaus).
+
+    Args:
+        domain: The domain to look up.
+
+    Returns:
+        A dict with ``reputation`` (``malicious`` | ``benign`` | ``unknown``)
+        and ``confidence`` (0.0–1.0).
+    """
     known_malicious = [
         "evil.com",
         "malware.net",
@@ -103,9 +161,24 @@ def check_reputation(domain: str) -> dict:
 
 
 def check_suspicious(domain: str) -> dict:
-    """Check for suspicious domain patterns."""
+    """Analyse *domain* for suspicious naming patterns.
+
+    Checks for:
+        - Unusually long random-looking subdomains (potential DGA output).
+        - Multiple consecutive hyphens.
+        - Long numeric sequences.
+        - Social-engineering keywords (login, secure, update, etc.).
+        - Known DGA indicator substrings.
+
+    Args:
+        domain: The domain to analyse.
+
+    Returns:
+        A dict with ``is_suspicious`` (bool) and ``reasons`` (list of str).
+    """
     suspicious = {"is_suspicious": False, "reasons": []}
 
+    # Each pattern is paired with a human-readable reason for the flag.
     patterns = [
         (r"^[a-z0-9]{20,}\.", "Long random subdomain"),
         (r"-{2,}", "Multiple hyphens"),
@@ -120,6 +193,7 @@ def check_suspicious(domain: str) -> dict:
             suspicious["is_suspicious"] = True
             suspicious["reasons"].append(reason)
 
+    # Simple substring heuristic for DGA-like domains.
     dga_indicators = ["jghjhg", "xyz123", "random", "temp"]
     if any(indicator in domain_lower for indicator in dga_indicators):
         suspicious["is_suspicious"] = True
@@ -153,6 +227,7 @@ def main():
             if isinstance(check_value, dict):
                 value = ", ".join([f"{k}: {v}" for k, v in check_value.items()])
             elif isinstance(check_value, list):
+                # Truncate long lists to keep the table readable.
                 value = ", ".join(str(v) for v in check_value[:3])
                 if len(check_value) > 3:
                     value += f" (+{len(check_value)-3} more)"

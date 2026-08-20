@@ -1,0 +1,97 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4A90D9', 'secondaryColor': '#E8F4FD', 'tertiaryColor': '#F5A623'}}}%%
+%% AlertFlow Architecture Flow Diagram
+%% Shows data flow from alert ingestion through triage, enrichment, notification, and response.
+
+flowchart TB
+    %% ── Ingestion Layer ──
+    subgraph INGESTION["Ingestion Layer"]
+        direction LR
+        SIEM["SIEM<br/>(Splunk / ES)"]
+        KAFKA["Kafka<br/>logsentry-to-alertflow"]
+        MANUAL["Manual<br/>CLI / API"]
+    end
+
+    %% ── AlertFlow Core ──
+    subgraph CORE["AlertFlow Core"]
+        direction TB
+
+        subgraph TRIAGE["Triage Workflow (5 Phases)"]
+            direction LR
+            R["1. REVIEW<br/>Confirm alert"]
+            V["2. VALIDATE<br/>Check FP / baseline"]
+            E["3. ENRICH<br/>IOC extraction"]
+            D["4. DOCUMENT<br/>Notes + evidence"]
+            ESC["5. ESCALATE<br/>Close / escalate"]
+        end
+
+        subgraph ENRICHMENT["Enrichment Pipeline"]
+            direction LR
+            IP["IP Lookup<br/>rDNS, GeoIP"]
+            DOMAIN["Domain Lookup<br/>DNS, WHOIS, rep"]
+            HASH["Hash Lookup<br/>MD5/SHA/rep"]
+            USER["User Lookup<br/>Account, risk"]
+        end
+
+        subgraph RESILIENCE["Resilience Layer"]
+            CB{{"Circuit Breaker<br/>CLOSED → OPEN<br/>→ HALF_OPEN"}}
+            RETRY["Retry +<br/>Exponential Backoff"]
+        end
+
+        DB[(SQLite / MySQL<br/>AlertStore)]
+    end
+
+    %% ── Integrations ──
+    subgraph INTEGRATIONS["External Integrations"]
+        direction LR
+        TP["ThreatPulse<br/>Webhook push"]
+        AF["AdminFlow<br/>AD user disable"]
+        AUGUR["Augur / n3xus<br/>Event push"]
+    end
+
+    %% ── Live Integrations ──
+    subgraph LIVE["Live Integration"]
+        direction LR
+        TICKET["Ticket Creator<br/>Jira / ServiceNow"]
+        FEED["Feed Poller<br/>VT, AbuseIPDB, OTX"]
+    end
+
+    %% ── API Layer ──
+    subgraph API["REST API (FastAPI)"]
+        direction LR
+        CRUD["/api/alerts<br/>CRUD + pagination"]
+        ENRICH_EP["/api/enrich<br/>IOC enrichment"]
+        HEALTH["/api/health<br/>DB connectivity"]
+        METRICS["/metrics<br/>Prometheus"]
+    end
+
+    %% ── Connections ──
+    SIEM -->|"alerts"| CORE
+    KAFKA -->|"messages"| CORE
+    MANUAL -->|"CLI/API"| CORE
+
+    R --> V --> E --> D --> ESC
+
+    E --> ENRICHMENT
+    ENRICHMENT --> RESILIENCE
+    RESILIENCE -->|"external APIs"| RESILIENCE
+
+    DB -->|"read/write"| CORE
+    DB -->|"CRUD"| API
+
+    ESC -->|"push"| TP
+    ESC -->|"disable user"| AF
+    ESC -->|"event"| AUGUR
+    D -->|"create ticket"| TICKET
+    E -->|"check IOCs"| FEED
+
+    API -->|"HTTP"| CORE
+
+    %% ── Styling ──
+    style INGESTION fill:#E8F4FD,stroke:#4A90D9
+    style CORE fill:#FFF3E0,stroke:#F5A623
+    style INTEGRATIONS fill:#E8F5E9,stroke:#4CAF50
+    style LIVE fill:#F3E5F5,stroke:#9C27B0
+    style API fill:#E3F2FD,stroke:#2196F3
+    style TRIAGE fill:#FFFDE7,stroke:#FFC107
+    style ENRICHMENT fill:#FFF8E1,stroke:#FF9800
+    style RESILIENCE fill:#FCE4EC,stroke:#E91E63

@@ -1,5 +1,17 @@
 # Tier 1 Alert Handling Runbook
 
+## MITRE ATT&CK Mapping
+
+| Phase | Techniques | IDs |
+|-------|-----------|-----|
+| Review | Detect | TA0040 |
+| Validate | Active Scanning | T1595 |
+| Enrich | Gather Victim Host Info | T1592 |
+| Document | Data from Information Repositories | T1213 |
+| Escalate | Report Incident | T1689 |
+
+---
+
 ## Phase 1: Review (2 minutes)
 
 1. **Confirm alert details**

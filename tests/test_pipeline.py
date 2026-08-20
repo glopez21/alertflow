@@ -1,4 +1,9 @@
-"""Tests for the pipeline module."""
+"""Tests for the pipeline module.
+
+Covers IOC type auto-detection, target enrichment dispatching, combined
+extract-and-enrich workflows, ThreatPulse webhook push, and AdminFlow
+user disabling with mocked external clients.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -13,100 +18,127 @@ def _mock_client():
 
 
 class TestAutoDetectIocType:
+    """Tests for auto_detect_ioc_type string classification."""
+
     def test_detect_ip(self):
+        """Verifies dotted-quad strings are classified as ip."""
         assert auto_detect_ioc_type("192.168.1.1") == "ip"
         assert auto_detect_ioc_type("8.8.8.8") == "ip"
         assert auto_detect_ioc_type("10.0.0.1") == "ip"
 
     def test_detect_email(self):
+        """Verifies strings with @ and domain are classified as email."""
         assert auto_detect_ioc_type("admin@example.com") == "email"
         assert auto_detect_ioc_type("user@corp.io") == "email"
 
     def test_detect_hash(self):
+        """Verifies hex strings of 32/40/64 chars are classified as hash."""
         assert auto_detect_ioc_type("d41d8cd98f00b204e9800998ecf8427e") == "hash"
         assert auto_detect_ioc_type("a" * 40) == "hash"
         assert auto_detect_ioc_type("b" * 64) == "hash"
 
     def test_detect_domain(self):
+        """Verifies strings with known TLD patterns are classified as domain."""
         assert auto_detect_ioc_type("google.com") == "domain"
         assert auto_detect_ioc_type("evil-domain.xyz") == "domain"
 
     def test_detect_unknown(self):
+        """Verifies non-matching strings are classified as unknown."""
         assert auto_detect_ioc_type("just-text") == "unknown"
         assert auto_detect_ioc_type("short") == "unknown"
 
 
 class TestEnrichTarget:
+    """Tests for enrich_target dispatching to correct enrichment handlers."""
+
     def test_enrich_ip(self):
+        """Verifies IP enrichment returns type, ip field, and checks dict."""
         result = enrich_target("8.8.8.8")
         assert result["type"] == "ip"
         assert result["ip"] == "8.8.8.8"
         assert "checks" in result
 
     def test_enrich_domain(self):
+        """Verifies domain enrichment with explicit type hint."""
         result = enrich_target("google.com", "domain")
         assert result["type"] == "domain"
         assert result["domain"] == "google.com"
         assert "checks" in result
 
     def test_enrich_hash(self):
+        """Verifies hash enrichment returns correct type and checks."""
         result = enrich_target("d41d8cd98f00b204e9800998ecf8427e", "hash")
         assert result["type"] == "hash"
         assert "checks" in result
 
     def test_enrich_user(self):
+        """Verifies user enrichment with explicit type hint."""
         result = enrich_target("admin", "user")
         assert result["type"] == "user"
         assert "checks" in result
 
     def test_enrich_email_extracts_username(self):
+        """Verifies email input is mapped to user type (username extraction)."""
         result = enrich_target("admin@example.com", "email")
         assert result["type"] == "user"
         assert "checks" in result
 
     def test_enrich_unknown_type(self):
+        """Verifies unknown type returns passthrough with target preserved."""
         result = enrich_target("unknown-target", "unknown")
         assert result["type"] == "unknown"
         assert result["target"] == "unknown-target"
 
     def test_auto_detect_ip(self):
+        """Verifies enrich_target auto-detects IP when no explicit type is given."""
         result = enrich_target("10.0.0.1")
         assert result["type"] == "ip"
 
 
 class TestExtractAndEnrich:
+    """Tests for the combined IOC extraction and enrichment pipeline."""
+
     def test_text_with_ip(self):
+        """Verifies IP extraction and enrichment from free-form text."""
         result = extract_and_enrich("Connection from 8.8.8.8 detected")
         assert "iocs" in result
         assert "enrichment" in result
         assert "8.8.8.8" in result["iocs"]["ips"]
 
     def test_text_with_domain(self):
+        """Verifies domain extraction from text."""
         result = extract_and_enrich("Visit google.com for info")
         assert "google.com" in result["iocs"]["domains"]
 
     def test_text_with_hash(self):
+        """Verifies MD5 hash extraction from text."""
         md5 = "d41d8cd98f00b204e9800998ecf8427e"
         result = extract_and_enrich(f"File hash: {md5}")
         assert md5 in result["iocs"]["hashes"]["md5"]
 
     def test_text_with_email(self):
+        """Verifies email extraction from text."""
         result = extract_and_enrich("Email: admin@example.com")
         assert "admin@example.com" in result["iocs"]["emails"]
 
     def test_empty_text(self):
+        """Verifies empty input returns empty IOC lists and no enrichment."""
         result = extract_and_enrich("")
         assert result["iocs"]["ips"] == []
         assert result["enrichment"] == {}
 
     def test_multiple_iocs(self):
+        """Verifies multiple IOC types are extracted in a single pass."""
         result = extract_and_enrich("IPs: 8.8.8.8, domain: google.com, email: admin@example.com")
         assert len(result["iocs"]["ips"]) >= 1
         assert len(result["iocs"]["domains"]) >= 1
 
 
 class TestPushToThreatPulse:
+    """Tests for push_to_threatpulse webhook integration with mocked client."""
+
     def test_push_success(self):
+        """Verifies successful webhook push returns the response payload."""
         client = _mock_client()
         client.send_webhook.return_value = {"status": "ok", "id": 123}
         with patch("integrations.threatpulse.ThreatPulseClient", return_value=client):
@@ -120,6 +152,7 @@ class TestPushToThreatPulse:
         assert result["status"] == "ok"
 
     def test_push_failure_returns_none(self):
+        """Verifies webhook push returns None when the client raises an exception."""
         client = _mock_client()
         client.send_webhook.side_effect = Exception("connection error")
         with patch("integrations.threatpulse.ThreatPulseClient", return_value=client):
@@ -131,6 +164,7 @@ class TestPushToThreatPulse:
         assert result is None
 
     def test_push_severity_mapping(self):
+        """Verifies alert severity is mapped to ThreatPulse's lowercase severity levels."""
         client = _mock_client()
         client.send_webhook.return_value = {"status": "ok"}
         with patch("integrations.threatpulse.ThreatPulseClient", return_value=client):
@@ -146,7 +180,10 @@ class TestPushToThreatPulse:
 
 
 class TestDisableUserInAdminFlow:
+    """Tests for disable_user_in_adminflow integration with mocked client."""
+
     def test_disable_success(self):
+        """Verifies successful user disable returns the response with username."""
         client = _mock_client()
         client.disable_user.return_value = {"status": "ok", "username": "jdoe"}
         with patch("integrations.adminflow.AdminFlowClient", return_value=client):
@@ -155,6 +192,7 @@ class TestDisableUserInAdminFlow:
         assert result["username"] == "jdoe"
 
     def test_disable_failure_returns_none(self):
+        """Verifies user disable returns None when the client raises an exception."""
         client = _mock_client()
         client.disable_user.side_effect = Exception("timeout")
         with patch("integrations.adminflow.AdminFlowClient", return_value=client):
@@ -162,6 +200,7 @@ class TestDisableUserInAdminFlow:
         assert result is None
 
     def test_disable_client_context_manager(self):
+        """Verifies the AdminFlow client context manager __exit__ is called after use."""
         client = _mock_client()
         client.disable_user.return_value = {"status": "ok"}
         with patch("integrations.adminflow.AdminFlowClient", return_value=client):

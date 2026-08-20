@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Live integration CLI for AlertFlow."""
+"""Live integration CLI for AlertFlow.
+
+Exposes Typer CLI commands for day-to-day SOC operations:
+
+* ``siem``   -- pull recent alerts from Splunk or Elasticsearch.
+* ``ticket`` -- create a Jira/ServiceNow ticket from the command line.
+* ``check``  -- look up an IOC (IP, hash) across threat intel feeds.
+* ``triage`` -- end-to-end triage: load an alert JSON, enrich it with
+  threat intel, and optionally open a ticket.
+
+Run as a module: ``python -m live <command> [OPTIONS]``.
+"""
 
 from typing import Optional
 
@@ -18,21 +29,29 @@ def siem(
     limit: int = typer.Option(10, "--limit", "-l", help="Max results"),
     config_file: Optional[str] = typer.Option(None, "--config", "-c", help="SIEM config file"),
 ) -> None:
-    """Fetch alerts from SIEM."""
+    """Fetch recent alerts from the configured SIEM (Splunk or Elasticsearch).
+
+    When ``--config`` is omitted a default local-Splunk configuration
+    is used.  The output is rendered as a Rich table with colour-coded
+    severity.
+    """
     from live.siem_collector import get_alerts_from_config
 
     if config_file:
+        # Load SIEM connection details from a JSON config file.
         import json
         with open(config_file) as f:
             config = json.load(f)
     else:
         config = {"type": "splunk", "host": "localhost", "index": "security"}
 
+    # Merge query options into the config dict so they reach the collector.
     alerts = get_alerts_from_config({**config, "hours": hours, "severity": severity, "limit": limit})
 
     if not alerts:
         console.print("[yellow]No alerts found (or using sample data)[/yellow]")
 
+    # Map severity to Rich console styles for colour-coded output.
     table = Table(title=f"SIEM Alerts (Last {hours}h)")
     table.add_column("ID", style="cyan")
     table.add_column("Rule", style="white")
@@ -67,7 +86,11 @@ def ticket(
     system: str = typer.Option("jira", "--system", "-s", help="Ticketing system"),
     host: Optional[str] = typer.Option(None, "--host", help="Jira/ServiceNow host"),
 ) -> None:
-    """Create a ticket."""
+    """Create an incident ticket in Jira or ServiceNow.
+
+    Without ``--host`` a sample ticket is generated so the command
+    can be used for quick demos without a live ticketing backend.
+    """
     from live.ticket_creator import create_ticket_system
 
     config = {"host": host} if host else {}
@@ -79,6 +102,7 @@ def ticket(
         creator = create_ticket_system("servicenow", **config)
         ticket = creator.create_incident(summary, description or summary, priority)
     else:
+        # No host configured -- fall back to a sample ticket for demo purposes.
         console.print("[yellow]Using sample (configure for real ticketing)[/yellow]")
         from live.ticket_creator import AlertTicket
         ticket = AlertTicket(key="SOC-1001", url="https://jira.example.com/SOC-1001", status="Open")
@@ -93,9 +117,15 @@ def check(
     feeds: str = typer.Option("virustotal,abuseipdb", "--feeds", "-f", help="Feeds to check"),
     api_keys: str = typer.Option("", "--keys", "-k", help="Comma-separated API keys"),
 ) -> None:
-    """Check IOC against threat feeds."""
+    """Check an IOC against one or more threat intelligence feeds.
+
+    API keys are positional: the first key maps to the first feed,
+    the second key to the second feed, etc.  Without keys the feeds
+    will use empty tokens (useful only against sandboxes or mocks).
+    """
     from live.feed_poller import check_ioc_with_feeds
 
+    # Pair each feed type with its corresponding API key by position.
     api_key_list = api_keys.split(",") if api_keys else [""]
 
     feeds_config = []
@@ -132,7 +162,12 @@ def triage(
     create_ticket: bool = typer.Option(True, "--ticket/--no-ticket", help="Create ticket"),
     config_file: Optional[str] = typer.Option(None, "--config", help="Config file"),
 ) -> None:
-    """Full triage workflow: enrich SIEM alert + create ticket."""
+    """End-to-end triage workflow: load alert, enrich with feeds, open ticket.
+
+    Reads a JSON alert file, runs IOC enrichment via configured threat
+    feeds, displays a summary table, and optionally creates a Jira
+    ticket with the enriched data.
+    """
     import json
 
     with open(alert_file) as f:

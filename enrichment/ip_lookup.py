@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""IP enrichment script for alert triage."""
+"""IP enrichment module for alert triage.
+
+Provides IP address enrichment capabilities including reverse DNS lookups,
+GeoIP classification, and private/reserved address detection. Supports both
+IPv4 and IPv6 addresses. Used as a building block in the AlertFlow pipeline
+to add network context to alerts involving IP indicators.
+
+Design notes:
+    - GeoIP is intentionally simplified (no external DB) — only classifies
+      public vs reserved for IPv4. Production use should integrate MaxMind
+      or a similar GeoIP database.
+    - Private IP detection uses both the stdlib ``ipaddress`` module and a
+      manual fallback for environments where the module may behave differently.
+"""
 
 import argparse
 import json
@@ -12,6 +25,7 @@ from utils import is_valid_ipv4
 
 
 def _is_valid_ipv6(ip_str: str) -> bool:
+    """Validate whether *ip_str* is a syntactically correct IPv6 address."""
     try:
         addr = ipaddress.ip_address(ip_str)
         return addr.version == 6
@@ -20,7 +34,16 @@ def _is_valid_ipv6(ip_str: str) -> bool:
 
 
 def enrich_ip(ip: str) -> dict:
-    """Enrich IP with available context."""
+    """Enrich an IP address with reverse-DNS, privacy, and GeoIP context.
+
+    Args:
+        ip: An IPv4 or IPv6 address string.
+
+    Returns:
+        A dict keyed by check name (``reverse_dns``, ``is_private``,
+        ``geoip``) with an ``error`` key when the IP is invalid.
+    """
+    # Validate input early so downstream checks never operate on garbage.
     if not is_valid_ipv4(ip) and not _is_valid_ipv6(ip):
         return {"ip": ip, "error": f"Invalid IP address: {ip}", "checks": {}}
 
@@ -29,6 +52,7 @@ def enrich_ip(ip: str) -> dict:
     result["checks"]["reverse_dns"] = get_reverse_dns(ip)
     result["checks"]["is_private"] = is_private_ip(ip)
 
+    # GeoIP is only implemented for IPv4 — IPv6 gets a stub response.
     if is_valid_ipv4(ip):
         result["checks"]["geoip"] = get_geoip(ip)
     else:
@@ -38,7 +62,19 @@ def enrich_ip(ip: str) -> dict:
 
 
 def get_reverse_dns(ip: str, timeout: float = 3.0) -> Optional[str]:
-    """Get reverse DNS for IP with configurable timeout."""
+    """Perform a reverse-DNS lookup for *ip* with a hard timeout.
+
+    The global default socket timeout is temporarily overridden so that
+    slow or unresponsive DNS servers cannot block the entire pipeline.
+
+    Args:
+        ip: The IP address to resolve.
+        timeout: Seconds to wait before aborting the lookup.
+
+    Returns:
+        The hostname string on success, or ``None`` on any DNS error.
+    """
+    # Save the process-wide default timeout so we can restore it afterward.
     old_timeout = socket.getdefaulttimeout()
     try:
         socket.setdefaulttimeout(timeout)
@@ -50,7 +86,18 @@ def get_reverse_dns(ip: str, timeout: float = 3.0) -> Optional[str]:
 
 
 def get_geoip(ip: str) -> dict:
-    """Get basic geo information (simple lookup, IPv4 only)."""
+    """Classify an IPv4 address into public/reserved/private categories.
+
+    This is a *simplified* lookup that does not require an external GeoIP
+    database. It only distinguishes public addresses (first octet 1–223)
+    from reserved ranges.
+
+    Args:
+        ip: A valid IPv4 address string.
+
+    Returns:
+        A dict with ``country``, ``region``, and ``type`` keys.
+    """
     if is_private_ip(ip):
         return {"country": "Private", "region": "Internal"}
 
@@ -61,6 +108,8 @@ def get_geoip(ip: str) -> dict:
         return geo
 
     first_octet = int(parts[0])
+    # Class A–C unicast ranges (1–223) are publicly routable; 224+ are
+    # multicast/reserved.
     if 1 <= first_octet < 224:
         geo["type"] = "Public"
     else:
@@ -70,11 +119,24 @@ def get_geoip(ip: str) -> dict:
 
 
 def is_private_ip(ip: str) -> bool:
-    """Check if IP is private (IPv4 or IPv6)."""
+    """Detect whether *ip* belongs to a private, loopback, or reserved range.
+
+    Covers RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16),
+    loopback (127.0.0.0/8), and the broadcast/reserved 255.0.0.0/8 block.
+    IPv6 private/link-local addresses are also detected via ``ipaddress``.
+
+    Args:
+        ip: An IPv4 or IPv6 address string.
+
+    Returns:
+        ``True`` if the address is private/reserved/loopback.
+    """
     try:
         addr = ipaddress.ip_address(ip)
         return addr.is_private or addr.is_loopback or addr.is_reserved
     except ValueError:
+        # Manual fallback for IPv4 when ipaddress fails — checks RFC 1918
+        # and common reserved blocks by octet inspection.
         parts = ip.split(".")
         if len(parts) != 4:
             return False

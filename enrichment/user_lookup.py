@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""User context lookup for alert triage."""
+"""User context lookup module for alert triage.
+
+Gathers account metadata, recent login activity, group/role membership,
+and computes a composite risk score for a given username.  All data sources
+are currently backed by demo lookup tables — swap them for LDAP/AD/IdP
+APIs in production.
+
+Risk-score formula:
+    Each detected risk factor adds 25 points, capped at 100.
+    Levels: 0–24  Low  |  25–49  Medium  |  50–74  High  |  75–100  Critical.
+"""
 
 import argparse
 import json
@@ -10,7 +20,15 @@ from utils import utcnow_iso
 
 
 def enrich_user(username: str) -> dict:
-    """Enrich user with available context."""
+    """Run all enrichment checks against *username*.
+
+    Args:
+        username: The account name to look up.
+
+    Returns:
+        A dict with a ``checks`` sub-dict containing ``account_info``,
+        ``recent_activity``, ``group_membership``, and ``risk_score``.
+    """
     result = {
         "username": username,
         "timestamp": utcnow_iso(),
@@ -26,7 +44,18 @@ def enrich_user(username: str) -> dict:
 
 
 def get_account_info(username: str) -> dict:
-    """Get basic account information."""
+    """Retrieve account metadata for *username*.
+
+    Looks up a hardcoded demo directory that models the kind of data an
+    Active Directory or LDAP query would return.
+
+    Args:
+        username: The account name (case-insensitive).
+
+    Returns:
+        A dict with keys such as ``enabled``, ``account_type``,
+        ``department``, ``last_password_change``, and ``account_created``.
+    """
     demo_users = {
         "admin": {
             "enabled": True,
@@ -67,6 +96,8 @@ def get_account_info(username: str) -> dict:
     if username_lower in demo_users:
         return demo_users[username_lower]
 
+    # Unknown users get a safe default — enabled=True avoids false-positive
+    # alerts on legitimate but unseen accounts.
     return {
         "enabled": True,
         "account_type": "standard",
@@ -77,7 +108,18 @@ def get_account_info(username: str) -> dict:
 
 
 def get_recent_activity(username: str) -> dict:
-    """Get recent user activity."""
+    """Retrieve recent login activity for *username*.
+
+    Returns logon counts, failure counts, last-seen timestamp, and
+    whether the session carried elevated privileges.
+
+    Args:
+        username: The account name (case-insensitive).
+
+    Returns:
+        A dict with ``logons_today``, ``failed_logons_today``,
+        ``last_logon``, ``last_logon_location``, and ``privileged_session``.
+    """
     demo_activity = {
         "admin": {
             "logons_today": 5,
@@ -109,7 +151,18 @@ def get_recent_activity(username: str) -> dict:
 
 
 def get_group_membership(username: str) -> dict:
-    """Get group membership."""
+    """Retrieve AD/LDAP group membership for *username*.
+
+    Flags privileged groups (Domain Admins, Enterprise Admins, etc.)
+    so downstream risk scoring can weigh membership appropriately.
+
+    Args:
+        username: The account name (case-insensitive).
+
+    Returns:
+        A dict with ``primary_group``, ``groups`` (list), and
+        ``privileged`` (bool).
+    """
     group_map = {
         "admin": {
             "primary_group": "Domain Admins",
@@ -140,7 +193,24 @@ def get_group_membership(username: str) -> dict:
 
 
 def calculate_risk_score(username: str) -> dict:
-    """Calculate user risk score."""
+    """Compute a composite risk score (0–100) for *username*.
+
+    Factors checked:
+        - Disabled account → +25
+        - >5 failed logons today → +25
+        - Active privileged session → +25
+        - Membership in a privileged group → +25
+        - Password not changed in >90 days → +25
+
+    The raw total is capped at 100 and mapped to a severity level.
+
+    Args:
+        username: The account name (case-insensitive).
+
+    Returns:
+        A dict with ``score`` (int), ``level`` (str), and ``factors``
+        (list of human-readable risk-factor descriptions).
+    """
     risk_factors = []
 
     account = get_account_info(username)
@@ -159,6 +229,7 @@ def calculate_risk_score(username: str) -> dict:
     if groups.get("privileged"):
         risk_factors.append("Privileged group membership")
 
+    # Check password age — stale passwords increase credential-theft risk.
     try:
         last_change = account.get("last_password_change", "unknown")
         if last_change != "unknown":
@@ -169,6 +240,7 @@ def calculate_risk_score(username: str) -> dict:
     except (ValueError, TypeError):
         pass
 
+    # Each factor contributes 25 points; the score is hard-capped at 100.
     score = min(len(risk_factors) * 25, 100)
 
     return {

@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
-"""AlertFlow - SOC Alert Triage Workflow CLI."""
+"""AlertFlow - SOC Alert Triage Workflow CLI.
+
+Command-line interface for security operations centre (SOC) analysts to
+triage, enrich, and respond to security alerts.  Built on Typer with
+Rich for terminal formatting.
+
+Subcommands
+-----------
+- ``triage``   Interactive workflow: review -> validate -> enrich -> document -> escalate.
+- ``create``   Manually create a new alert.
+- ``list``     List stored alerts, optionally filtered by status.
+- ``close``    Close an alert.
+- ``fp``       Mark an alert as False Positive with a reason.
+- ``delete``   Remove an alert from the store.
+- ``migrate``  Import alerts from a legacy JSON file into SQLite.
+- ``note``     Attach a note / timeline entry to an alert.
+- ``timeline`` Display the full timeline for an alert.
+
+Integration points
+------------------
+- **ThreatPulse** -- Webhook destination for triaged alerts.
+- **AdminFlow** -- Identity provider used to disable compromised accounts.
+- **Augur**     -- Hub for aggregating triage results across the SOC.
+- **Live**      -- Optional real-time monitoring sub-app (loaded if available).
+"""
 
 import json
 from typing import Optional
@@ -15,6 +39,9 @@ from augur_notifier import AugurNotifier
 
 app = typer.Typer(name="alertflow", help="AlertFlow - SOC Alert Triage")
 
+# Optionally mount the real-time monitoring sub-app under ``alertflow live``.
+# The import is guarded so the CLI remains functional when the live module
+# is not installed.
 try:
     from live.__main__ import app as live_app
     app.add_typer(live_app, name="live")
@@ -23,6 +50,8 @@ except ImportError:
 console = Console()
 
 
+# Canonical status and severity vocabularies used across the triage
+# workflow and persisted to the database.
 ALERT_STATUS = ["Open", "In Progress", "Escalated", "Closed - FP", "Closed - Benign", "Closed - Responded"]
 SEVERITY_LEVELS = ["P1", "P2", "P3", "P4"]
 
@@ -42,7 +71,25 @@ def triage(
     adminflow_key: str = typer.Option("", "--af-key", help="AdminFlow API key", envvar="ADMINFLOW_API_KEY"),
     augur_url: str = typer.Option("", "--augur-url", help="Augur hub URL", envvar="AUGUR_URL"),
 ):
-    """Run interactive alert triage workflow with enrichment and integrations."""
+    """Run interactive alert triage workflow with enrichment and integrations.
+
+    Orchestrates the full analyst triage lifecycle:
+
+    1. **REVIEW**   -- Parse and display alert fields (title, severity, IPs, user).
+    2. **VALIDATE** -- Analyst confirms the alert is a true positive.
+    3. **ENRICH**   -- Extract IOCs from raw text, look up each one in parallel
+                       via the enrichment pipeline, and display results in tables.
+    4. **DOCUMENT** -- Analyst adds free-form notes.
+    5. **ESCALATE** -- Analyst chooses an action: escalate, close, mark FP,
+                       or disable the compromised user account.
+
+    After triage the alert is persisted to SQLite, optionally pushed to
+    ThreatPulse, and forwarded to the Augur hub.
+
+    Environment variables ``THREATPULSE_URL``, ``THREATPULSE_API_KEY``,
+    ``ADMINFLOW_URL``, ``ADMINFLOW_API_KEY``, and ``AUGUR_URL`` are used
+    as fallback defaults for the corresponding CLI options.
+    """
     console.print("[bold blue]AlertFlow Triage Workflow[/bold blue]")
     console.print("[dim]REVIEW → VALIDATE → ENRICH → DOCUMENT → ESCALATE[/dim]\n")
 
@@ -90,7 +137,9 @@ def triage(
 
     enrichment_data = {}
 
-    # ENRICH
+    # -- Phase 2: ENRICH --
+    # Fall back to concatenating structured fields when raw_data is empty,
+    # so the IOC extractor still has something to work with.
     console.print("\n[cyan]2. ENRICH[/cyan] - Gathering context...")
     if enrich:
         enrichment_data = extract_and_enrich(raw_data or " ".join(filter(None, [src_ip, dst_ip, user])))
@@ -141,7 +190,9 @@ def triage(
     console.print("\n[cyan]3. DOCUMENT[/cyan] - Document findings...")
     notes = Prompt.ask("Add notes (or press Enter to skip)", default="")
 
-    # ESCALATE or CLOSE
+    # -- Phase 4: ESCALATE / CLOSE / DISABLE --
+    # Analyst chooses the disposition; this drives the final alert status
+    # and may trigger a side-effect (e.g. account disable via AdminFlow).
     console.print("\n[cyan]4. ESCALATE[/cyan]")
     action = Prompt.ask(
         "Action to take",
@@ -180,7 +231,8 @@ def triage(
         alert_status = "Closed"
         console.print("\n[blue]✓ Alert closed[/blue]")
 
-    # Save to database
+    # Persist the triage result -- add_alert creates the row; subsequent
+    # calls enrich it with status, enrichment data, and analyst notes.
     saved = store.add_alert(title, severity, data.get("source", "triage"), ioc=src_ip or "")
     store.update_status(saved["id"], alert_status, analyst, fp_reason)
     if enrichment_data:
@@ -188,7 +240,9 @@ def triage(
     if notes:
         store.add_note(saved["id"], notes, analyst)
 
-    # Push to ThreatPulse
+    # -- Phase 5: NOTIFY --
+    # Forward the triaged alert to ThreatPulse when the operator opts in
+    # via --push and provides a valid base URL.
     if push and threatpulse_url:
         console.print("\n[cyan]5. NOTIFY[/cyan] - Pushing to ThreatPulse...")
         result = push_to_threatpulse(
@@ -216,7 +270,8 @@ def triage(
         console.print(f"  IOCs: {sum(len(v) if isinstance(v, list) else sum(len(v2) for v2 in v.values()) for v in iocs.values())} found")
     console.print(f"  Saved as alert #{saved['id']}")
 
-    # Push to Augur hub
+    # Aggregate triage results to the Augur hub for cross-SOC visibility.
+    # This is fire-and-forget; failures are logged but do not block the CLI.
     if augur_url:
         augur = AugurNotifier({"hub_url": augur_url})
         triage_data = {**data, "id": saved["id"], "status": alert_status, "analyst": analyst}
@@ -228,14 +283,23 @@ def triage(
 
 @app.command()
 def create(title: str, severity: str = "P3", source: str = "manual", ioc: str = ""):
-    """Create a new alert."""
+    """Create a new alert directly without the interactive triage flow.
+
+    Useful for ingesting alerts from external sources or scripting bulk
+    alert creation.
+    """
     alert = store.add_alert(title, severity, source, ioc)
     console.print(f"[green]✓ Created alert #{alert['id']}: {title}[/green]")
 
 
 @app.command("list")
 def list_alerts(status: Optional[str] = None):
-    """List alerts."""
+    """List alerts stored in the database.
+
+    Args:
+        status: Optional status filter (e.g. ``"Open"``, ``"Escalated"``).
+                When ``None`` all alerts are returned.
+    """
     alerts, total = store.list_alerts(status)
     
     table = Table(title=f"Alerts{' - ' + status if status else ''}")
@@ -260,7 +324,13 @@ def list_alerts(status: Optional[str] = None):
 
 @app.command()
 def close(alert_id: int, reason: str = "", analyst: str = ""):
-    """Close an alert (optionally as False Positive)."""
+    """Close an alert, optionally marking it as a False Positive.
+
+    Args:
+        alert_id: Database ID of the alert to close.
+        reason: Optional reason string (stored as the FP reason field).
+        analyst: Name of the analyst closing the alert.
+    """
     alert = store.update_status(alert_id, "Closed", analyst, reason)
     if alert:
         console.print(f"[green]✓ Alert #{alert_id} closed[/green]")
@@ -270,7 +340,11 @@ def close(alert_id: int, reason: str = "", analyst: str = ""):
 
 @app.command()
 def fp(alert_id: int, reason: str):
-    """Mark an alert as False Positive with reason."""
+    """Mark an alert as False Positive with a required reason.
+
+    Sets the alert status to ``"Closed - FP"`` and records *reason* for
+    audit purposes.
+    """
     alert = store.update_status(alert_id, "Closed - FP", fp_reason=reason)
     if alert:
         console.print(f"[green]✓ Alert #{alert_id} marked as FP[/green]")
@@ -281,7 +355,11 @@ def fp(alert_id: int, reason: str):
 
 @app.command()
 def delete(alert_id: int):
-    """Delete an alert."""
+    """Permanently delete an alert from the database.
+
+    This operation is irreversible.  Prefer ``close`` or ``fp`` for
+    normal workflow disposition.
+    """
     if store.delete_alert(alert_id):
         console.print(f"[green]✓ Alert #{alert_id} deleted[/green]")
     else:
@@ -290,7 +368,11 @@ def delete(alert_id: int):
 
 @app.command()
 def migrate(json_file: str = "alerts.json"):
-    """Migrate alerts from JSON file to SQLite."""
+    """Migrate alerts from a legacy JSON file to the SQLite database.
+
+    Reads each alert from *json_file*, inserts it into the store, and
+    reports the count of successfully migrated records.
+    """
     count = store.migrate_from_json(json_file)
     if count:
         console.print(f"[green]✓ Migrated {count} alerts from {json_file} to SQLite[/green]")
@@ -300,7 +382,11 @@ def migrate(json_file: str = "alerts.json"):
 
 @app.command()
 def note(alert_id: int, note: str, analyst: str = ""):
-    """Add a note/timeline entry to an alert."""
+    """Add a note / timeline entry to an alert.
+
+    Notes are append-only and timestamped; they appear in the ``timeline``
+    view and provide an audit trail of analyst actions.
+    """
     alert = store.add_note(alert_id, note, analyst)
     if not alert:
         console.print(f"[red]Alert #{alert_id} not found[/red]")
@@ -311,7 +397,12 @@ def note(alert_id: int, note: str, analyst: str = ""):
 
 @app.command()
 def timeline(alert_id: int):
-    """Show alert timeline/history."""
+    """Show the full timeline / history for an alert.
+
+    Reconstructs a chronological view from the alert's creation event,
+    all attached notes, and the most recent status update, then displays
+    them in a Rich table sorted by timestamp.
+    """
     alert = store.get_alert(alert_id)
     if not alert:
         console.print(f"[red]Alert #{alert_id} not found[/red]")
@@ -320,17 +411,19 @@ def timeline(alert_id: int):
     console.print(f"\n[bold blue]Alert #{alert_id} Timeline[/bold blue]")
     console.print(f"[cyan]{alert['title']}[/cyan]\n")
     
-    # Build timeline
+    # Build a chronological timeline from structured alert data.
+    # Three sources: creation event, analyst notes, and the final
+    # status update (if it differs from creation time).
     timeline = []
     
-    # Creation
+    # Seed the timeline with the alert creation event.
     timeline.append({
         "time": alert.get("created_at", ""),
         "action": "Alert created",
         "analyst": "system"
     })
     
-    # Notes
+    # Append each analyst note as a timeline entry.
     for note in alert.get("notes", []):
         timeline.append({
             "time": note.get("timestamp", ""),
@@ -338,7 +431,8 @@ def timeline(alert_id: int):
             "analyst": note.get("analyst", "")
         })
     
-    # Updated
+    # Only add the status-update entry when it differs from creation,
+    # avoiding a duplicate line for freshly created alerts.
     if alert.get("updated_at") != alert.get("created_at"):
         timeline.append({
             "time": alert.get("updated_at", ""),

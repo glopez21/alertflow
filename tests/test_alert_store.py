@@ -1,4 +1,8 @@
-"""Tests for AlertStore (SQLite-backed)."""
+"""Tests for AlertStore (SQLite-backed).
+
+Covers CRUD operations, status transitions, enrichment storage, note management,
+pagination, filtering, persistence across connections, and JSON migration.
+"""
 
 import json
 import tempfile
@@ -8,6 +12,8 @@ from db import AlertStore
 
 
 class TestAlertStore:
+    """Tests for AlertStore CRUD, pagination, and field management."""
+
     def setup_method(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.tmp.close()
@@ -18,11 +24,13 @@ class TestAlertStore:
         Path(self.tmp.name).unlink(missing_ok=True)
 
     def test_empty_store(self):
+        """Verifies a fresh store returns zero alerts and empty list."""
         alerts, total = self.store.list_alerts()
         assert alerts == []
         assert total == 0
 
     def test_add_alert(self):
+        """Verifies a newly added alert has correct fields and auto-assigned id/status."""
         alert = self.store.add_alert("Test Alert", "P1", "splunk", "8.8.8.8")
         assert alert["title"] == "Test Alert"
         assert alert["severity"] == "P1"
@@ -32,6 +40,7 @@ class TestAlertStore:
         assert alert["id"] == 1
 
     def test_add_multiple_alerts(self):
+        """Verifies sequential ids and total count when adding multiple alerts."""
         self.store.add_alert("Alert 1", "P1", "splunk")
         a2 = self.store.add_alert("Alert 2", "P2", "manual")
         assert a2["id"] == 2
@@ -40,15 +49,18 @@ class TestAlertStore:
         assert total == 2
 
     def test_get_alert_by_id(self):
+        """Verifies retrieval of an existing alert by its id."""
         self.store.add_alert("Test", "P3", "manual")
         alert = self.store.get_alert(1)
         assert alert is not None
         assert alert["title"] == "Test"
 
     def test_get_nonexistent_alert(self):
+        """Verifies get_alert returns None for an id that does not exist."""
         assert self.store.get_alert(999) is None
 
     def test_update_status(self):
+        """Verifies status and analyst fields are updated correctly."""
         self.store.add_alert("Test", "P2", "splunk")
         updated = self.store.update_status(1, "In Progress", "analyst1")
         assert updated is not None
@@ -56,17 +68,20 @@ class TestAlertStore:
         assert updated["analyst"] == "analyst1"
 
     def test_update_status_preserves_existing_fields(self):
+        """Verifies that updating status without providing analyst preserves the existing value."""
         self.store.add_alert("Test", "P1", "splunk")
         self.store.update_status(1, "In Progress", analyst="analyst1")
         updated = self.store.update_status(1, "Escalated")
         assert updated["analyst"] == "analyst1"
 
     def test_update_status_with_fp_reason(self):
+        """Verifies false-positive reason is stored when closing an alert as FP."""
         self.store.add_alert("Test", "P3", "manual")
         updated = self.store.update_status(1, "Closed - FP", fp_reason="scanner")
         assert updated["fp_reason"] == "scanner"
 
     def test_update_status_both_analyst_and_fp(self):
+        """Verifies simultaneous update of status, analyst, and false-positive reason."""
         self.store.add_alert("Test", "P1", "splunk")
         updated = self.store.update_status(1, "Closed - FP", analyst="analyst1", fp_reason="confirmed fp")
         assert updated["status"] == "Closed - FP"
@@ -74,9 +89,11 @@ class TestAlertStore:
         assert updated["fp_reason"] == "confirmed fp"
 
     def test_update_nonexistent(self):
+        """Verifies updating a nonexistent alert returns None."""
         assert self.store.update_status(999, "Closed") is None
 
     def test_list_by_status(self):
+        """Verifies listing alerts filtered by a specific status."""
         self.store.add_alert("Alert 1", "P1", "splunk")
         self.store.add_alert("Alert 2", "P2", "manual")
         self.store.update_status(1, "Escalated")
@@ -88,6 +105,7 @@ class TestAlertStore:
         assert esc_total == 1
 
     def test_list_pagination(self):
+        """Verifies limit/offset pagination returns correct page sizes and totals."""
         for i in range(5):
             self.store.add_alert(f"Alert {i}", "P3", "manual")
         page1, total = self.store.list_alerts(limit=2, offset=0)
@@ -99,6 +117,7 @@ class TestAlertStore:
         assert len(page3) == 1
 
     def test_persistence(self):
+        """Verifies alerts survive store close/reopen cycles (SQLite persistence)."""
         self.store.add_alert("Persistent", "P1", "splunk")
         self.store.close()
         store2 = AlertStore(self.tmp.name)
@@ -109,6 +128,7 @@ class TestAlertStore:
         store2.close()
 
     def test_add_alert_with_defaults(self):
+        """Verifies default field values when an alert is created with minimal parameters."""
         alert = self.store.add_alert("Minimal", "P3", "manual")
         assert alert["status"] == "Open"
         assert alert["analyst"] == ""
@@ -116,15 +136,18 @@ class TestAlertStore:
         assert alert["fp_reason"] == ""
 
     def test_add_alert_without_ioc(self):
+        """Verifies ioc field defaults to empty string when not provided."""
         alert = self.store.add_alert("No IOC", "P4", "manual")
         assert alert["ioc"] == ""
 
     def test_add_alert_with_enrichment(self):
+        """Verifies enrichment dict is stored alongside the alert at creation time."""
         enrichment = {"ips": ["8.8.8.8"], "domains": ["evil.com"]}
         alert = self.store.add_alert("Enriched", "P1", "manual", ioc="8.8.8.8", enrichment=enrichment)
         assert alert["enrichment"] == enrichment
 
     def test_update_enrichment(self):
+        """Verifies enrichment data can be set after alert creation."""
         self.store.add_alert("Test", "P3", "manual")
         enrichment = {"ips": ["10.0.0.1"], "type": "ip"}
         updated = self.store.update_enrichment(1, enrichment)
@@ -132,17 +155,21 @@ class TestAlertStore:
         assert updated["enrichment"] == enrichment
 
     def test_update_enrichment_nonexistent(self):
+        """Verifies updating enrichment on a nonexistent alert returns None."""
         assert self.store.update_enrichment(999, {}) is None
 
     def test_delete_alert(self):
+        """Verifies deletion removes the alert and subsequent get returns None."""
         self.store.add_alert("To Delete", "P3", "manual")
         assert self.store.delete_alert(1) is True
         assert self.store.get_alert(1) is None
 
     def test_delete_nonexistent(self):
+        """Verifies deleting a nonexistent alert returns False."""
         assert self.store.delete_alert(999) is False
 
     def test_add_note(self):
+        """Verifies a note is appended with correct content and analyst attribution."""
         self.store.add_alert("Alert with note", "P2", "splunk")
         updated = self.store.add_note(1, "Investigated further", "analyst1")
         assert updated is not None
@@ -151,9 +178,11 @@ class TestAlertStore:
         assert updated["notes"][0]["analyst"] == "analyst1"
 
     def test_add_note_nonexistent(self):
+        """Verifies adding a note to a nonexistent alert returns None."""
         assert self.store.add_note(999, "note") is None
 
     def test_multiple_notes(self):
+        """Verifies multiple notes accumulate in order on a single alert."""
         self.store.add_alert("Multi note", "P3", "manual")
         self.store.add_note(1, "First", "analyst1")
         self.store.add_note(1, "Second", "analyst2")
@@ -162,6 +191,7 @@ class TestAlertStore:
 
 
 class TestMigration:
+    """Tests for migrating alert data from legacy JSON files into SQLite."""
     def setup_method(self):
         self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.tmp_db.close()
@@ -174,12 +204,14 @@ class TestMigration:
         Path(self.tmp_json.name).unlink(missing_ok=True)
 
     def test_migrate_empty_json(self):
+        """Verifies migration from an empty JSON alert list imports zero records."""
         self.tmp_json.write(json.dumps({"alerts": []}))
         self.tmp_json.close()
         count = self.store.migrate_from_json(self.tmp_json.name)
         assert count == 0
 
     def test_migrate_from_json(self):
+        """Verifies migration preserves alert fields, enrichment, and notes from JSON."""
         data = {
             "alerts": [
                 {"id": 1, "title": "Alert 1", "severity": "P1", "source": "splunk",
@@ -207,5 +239,6 @@ class TestMigration:
         assert len(a2["notes"]) == 1
 
     def test_migrate_nonexistent_file(self):
+        """Verifies migration from a missing JSON file returns count of zero."""
         count = self.store.migrate_from_json("/nonexistent/file.json")
         assert count == 0

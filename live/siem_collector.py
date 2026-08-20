@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
-"""SIEM alert collector for AlertFlow."""
+"""SIEM alert collector for AlertFlow.
+
+Normalises alerts from multiple SIEM platforms (Splunk Enterprise
+Security, Elasticsearch/OpenSearch) into a common ``Alert`` dataclass
+so downstream playbooks and triage logic never need to care which SIEM
+is in use.
+
+Key design decisions:
+
+* **Query sanitisation** -- user-supplied index names and severity
+  values are stripped of non-alphanumeric characters before being
+  interpolated into Splunk SPL.  This is a defence-in-depth measure;
+  the primary protection is that these values should already be
+  validated upstream, but we never trust that.
+* **Sample fallback** -- every collector returns deterministic sample
+  alerts when the SIEM is unreachable, credentials are wrong, or the
+  query times out.  This keeps demo/development workflows functional
+  without a live SIEM.
+* **Factory pattern** -- ``create_siem_collector()`` maps a
+  ``SIEMConfig.type`` string to the concrete collector class,
+  keeping the caller decoupled from implementation details.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +36,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SIEMConfig:
-    """SIEM connection configuration."""
+    """Connection and query configuration for a SIEM instance.
+
+    Attributes:
+        type: Backend selector -- ``"splunk"`` or ``"elasticsearch"``.
+        host: Hostname or IP of the SIEM API endpoint.
+        port: API port (Splunk default 8089, ES default 9200).
+        username / password: Basic-auth credentials.
+        api_key: Alternative key-based auth (used by some ES setups).
+        index: Target index / index pattern to search.
+        verify_ssl: Whether to enforce TLS certificate validation.
+    """
 
     type: str = "splunk"
     host: str = "localhost"
@@ -29,7 +60,24 @@ class SIEMConfig:
 
 @dataclass
 class Alert:
-    """Normalized SIEM alert."""
+    """Platform-agnostic representation of a single SIEM alert.
+
+    Every collector is responsible for mapping its native alert format
+    into this schema.  Fields left empty indicate the SIEM did not
+    provide that value.
+
+    Attributes:
+        id: Unique alert identifier from the SIEM.
+        source: Collector name (``"splunk"``, ``"elasticsearch"``).
+        rule_name: Detection rule that fired.
+        severity: Alert severity (``"critical"``, ``"high"``, ``"medium"``, ``"low"``).
+        timestamp: ISO-8601 timestamp of the alert.
+        host: Affected host.
+        user: Associated user account, if any.
+        src_ip / dst_ip: Network addresses involved.
+        raw_message: Original unparsed message from the SIEM.
+        raw_data: Full source payload for downstream enrichment.
+    """
 
     id: str
     source: str
@@ -44,6 +92,7 @@ class Alert:
     raw_data: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        """Serialise the alert to a plain dict (excludes raw_data)."""
         return {
             "id": self.id,
             "source": self.source,
@@ -59,10 +108,20 @@ class Alert:
 
 
 class SplunkCollector:
-    """Splunk Enterprise Security collector."""
+    """Collector that queries Splunk Enterprise via its REST API.
+
+    Uses Splunk's ``/services/search/jobs`` endpoint to execute SPL
+    queries asynchronously: a search job is created, polled until
+    ``dispatchState`` is ``"DONE"``, then results are fetched.
+
+    If the Splunk instance is unreachable or the query fails, the
+    collector falls back to sample alerts so the rest of the pipeline
+    can continue operating.
+    """
 
     def __init__(self, config: SIEMConfig):
         self.config = config
+        # Splunk REST API uses HTTPS by default on port 8089.
         self._client = httpx.Client(
             base_url=f"https://{config.host}:{config.port}",
             auth=(config.username, config.password),
@@ -70,7 +129,16 @@ class SplunkCollector:
         )
 
     def search(self, query: str, earliest: str = "-1h", latest: str = "now") -> list[Alert]:
-        """Execute Splunk search."""
+        """Execute a Splunk SPL search query.
+
+        Args:
+            query: Raw SPL search string (without ``search`` prefix).
+            earliest: Splunk time-modifier for the start of the window.
+            latest: Splunk time-modifier for the end of the window.
+
+        Returns:
+            List of ``Alert`` objects, or sample alerts on failure.
+        """
         search_query = f"search={query} earliest={earliest} latest={latest}"
 
         try:
@@ -90,7 +158,19 @@ class SplunkCollector:
         return self._get_sample_alerts()
 
     def _wait_for_results(self, sid: str, timeout: int = 30) -> list[Alert]:
-        """Wait for Splunk search to complete and fetch results."""
+        """Poll a Splunk search job until completion.
+
+        Blocks up to *timeout* seconds, checking every second whether
+        the job's ``dispatchState`` has reached ``"DONE"``.  Returns
+        sample alerts on timeout or failure so the pipeline continues.
+
+        Args:
+            sid: Splunk search job session ID.
+            timeout: Maximum seconds to wait before giving up.
+
+        Returns:
+            Parsed ``Alert`` list, or sample alerts.
+        """
         import time
 
         start = time.time()
@@ -120,6 +200,7 @@ class SplunkCollector:
         return self._get_sample_alerts()
 
     def _parse_result(self, result: dict) -> Alert:
+        """Map a single Splunk result row to an ``Alert`` dataclass."""
         return Alert(
             id=result.get("_key", ""),
             source="splunk",
@@ -135,6 +216,7 @@ class SplunkCollector:
         )
 
     def _get_sample_alerts(self) -> list[Alert]:
+        """Return hardcoded sample alerts for demo / fallback."""
         return [
             Alert(
                 id="alert-001", source="siem", rule_name="Failed Login Attempt",
@@ -152,12 +234,28 @@ class SplunkCollector:
         severity: str | None = None,
         limit: int = 100,
     ) -> list[Alert]:
-        """Get recent alerts."""
+        """Build and execute a Splunk query for recent alerts.
+
+        Sanitises *index* and *severity* to prevent SPL injection via
+        crafted configuration values.  The limit is clamped to
+        [1, 10000] to avoid accidental resource exhaustion.
+
+        Args:
+            hours: How far back to search.
+            severity: Optional severity filter (e.g. ``"high"``).
+            limit: Maximum number of results.
+
+        Returns:
+            List of ``Alert`` objects.
+        """
+        # Strip characters that are not valid in Splunk index names
         safe_index = re.sub(r"[^a-zA-Z0-9_.\-]", "", self.config.index)
         query = f"index={safe_index}"
         if severity:
+            # Strip non-alphanumeric chars to prevent SPL injection
             safe_severity = re.sub(r"[^a-zA-Z0-9]", "", severity)
             query += f" severity={safe_severity}"
+        # Clamp limit to a sane range
         safe_limit = max(1, min(int(limit), 10000))
         query += f" | head {safe_limit}"
 
@@ -165,17 +263,32 @@ class SplunkCollector:
 
 
 class ElasticsearchCollector:
-    """Elasticsearch collector."""
+    """Collector that queries Elasticsearch / OpenSearch.
+
+    Builds a ``bool``/``range`` DSL query and executes it against the
+    configured index.  Falls back to sample alerts when the cluster is
+    unreachable.
+    """
 
     def __init__(self, config: SIEMConfig):
         self.config = config
+        # Elasticsearch typically listens on HTTP 9200.
         self._client = httpx.Client(
             base_url=f"http://{config.host}:{config.port}",
             verify=config.verify_ssl,
         )
 
     def search(self, query: str, hours: int = 1) -> list[Alert]:
-        """Execute Elasticsearch query."""
+        """Execute an Elasticsearch ``_search`` query.
+
+        Args:
+            query: Not currently used; time-range filtering is applied
+                via a ``range`` clause on ``@timestamp``.
+            hours: How far back to search.
+
+        Returns:
+            List of ``Alert`` objects, or sample alerts on failure.
+        """
         now = datetime.now(timezone.utc)
         start = (now - timedelta(hours=hours)).isoformat()
 
@@ -207,6 +320,7 @@ class ElasticsearchCollector:
         return self._sample_alerts()
 
     def _parse_hit(self, hit: dict) -> Alert:
+        """Map a single ES hit to an ``Alert`` dataclass."""
         source = hit.get("_source", {})
         return Alert(
             id=hit.get("_id", ""),
@@ -222,11 +336,23 @@ class ElasticsearchCollector:
         )
 
     def get_recent_alerts(self, hours: int = 1, limit: int = 100) -> list[Alert]:
+        """Convenience wrapper that searches for all recent alerts."""
         return self.search("*", hours)
 
 
 def create_siem_collector(config: SIEMConfig) -> SplunkCollector | ElasticsearchCollector:
-    """Factory for SIEM collectors."""
+    """Factory that instantiates the correct collector for the given SIEM type.
+
+    Args:
+        config: Populated ``SIEMConfig`` with ``type`` set to
+            ``"splunk"`` or ``"elasticsearch"``.
+
+    Returns:
+        A ``SplunkCollector`` or ``ElasticsearchCollector`` instance.
+
+    Raises:
+        ValueError: If ``config.type`` is not a recognised backend.
+    """
     if config.type == "splunk":
         return SplunkCollector(config)
     elif config.type == "elasticsearch":
@@ -235,7 +361,19 @@ def create_siem_collector(config: SIEMConfig) -> SplunkCollector | Elasticsearch
 
 
 def get_alerts_from_config(config: dict) -> list[Alert]:
-    """Get alerts using config dict."""
+    """Convenience entry point that builds a collector from a raw dict.
+
+    Filters the dict to only known ``SIEMConfig`` keys so that extra
+    keys (``hours``, ``severity``, ``limit``) can coexist in the same
+    config object without causing a ``TypeError``.
+
+    Args:
+        config: Flat dict with SIEM connection fields plus optional
+            ``hours``, ``severity``, ``limit`` query parameters.
+
+    Returns:
+        List of ``Alert`` objects from the configured SIEM.
+    """
     config_keys = {"type", "host", "port", "username", "password", "api_key", "index", "verify_ssl"}
     filtered = {k: v for k, v in config.items() if k in config_keys}
     siem_config = SIEMConfig(**filtered)
@@ -248,7 +386,7 @@ def get_alerts_from_config(config: dict) -> list[Alert]:
 
 
 def _sample_alerts() -> list[Alert]:
-    """Return sample alerts for demo."""
+    """Return timestamped sample alerts for demo and fallback use."""
     return [
         Alert(
             id="alert-001",
@@ -284,7 +422,19 @@ def _sample_alerts() -> list[Alert]:
 
 
 def enrich_with_siem(alert: Alert, config: dict) -> Alert:
-    """Enrich an alert with SIEM context."""
+    """Enrich an alert with related SIEM activity from the last 24 hours.
+
+    Queries the SIEM for other alerts sharing the same host, user,
+    source IP, or destination IP, then attaches up to five related
+    alert summaries to ``alert.raw_data["siem_related"]``.
+
+    Args:
+        alert: The base alert to enrich.
+        config: SIEM configuration dict (same format as ``get_alerts_from_config``).
+
+    Returns:
+        The same ``Alert`` instance with ``raw_data`` mutated in-place.
+    """
     siem_config = SIEMConfig(**config)
     collector = create_siem_collector(siem_config)
 

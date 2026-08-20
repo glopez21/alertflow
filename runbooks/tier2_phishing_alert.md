@@ -4,6 +4,16 @@
 
 ## Severity: P1-P2 (Urgent)
 
+## MITRE ATT&CK Mapping
+
+| Phase | Techniques | IDs |
+|-------|-----------|-----|
+| Review | Phishing: Spearphishing Attachment/Link | T1566.001 / T1566.002 |
+| Validate | User Execution | T1204 |
+| Enrich | Phishing for Information | T1598 |
+| Document | Data from Local System | T1005 |
+| Response | Credential Access / Exfiltration | T1078 / T1567 |
+
 ---
 
 ## Phase 1: Review (2 minutes)

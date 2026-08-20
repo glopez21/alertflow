@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Unified enrichment CLI for AlertFlow."""
+"""Unified enrichment CLI for AlertFlow.
+
+Exposes a single ``typer`` application with sub-commands for every enrichment
+type (IP, domain, hash, user) plus an ``all`` command that auto-detects the
+IOC kind and dispatches accordingly.
+
+Usage examples::
+
+    python -m enrichment ip 8.8.8.8
+    python -m enrichment domain evil.com --json
+    python -m enrichment hash aadea647...
+    python -m enrichment all <any-ioc>
+
+Design notes:
+    - Rich console output is the default; ``--json`` produces machine-readable
+      JSON for pipeline integration.
+    - Sub-command imports are deferred (inside the function body) so that
+      ``python -m enrichment ip …`` does not pull in unrelated modules.
+"""
 
 import json as json_mod
 
@@ -14,7 +32,17 @@ console = Console()
 
 
 def _render_checks_table(title: str, result: dict, console: Console = console):
-    """Render a rich Table from an enrichment result dict."""
+    """Render a Rich ``Table`` from a standard enrichment result dict.
+
+    Walks the ``checks`` sub-dict and formats each entry as a
+    "Check | Result" row.  Dicts are flattened to ``k: v`` pairs;
+    lists are truncated to three items to keep the table compact.
+
+    Args:
+        title: Table caption shown at the top.
+        result: The enrichment result dict (must contain a ``checks`` key).
+        console: The Rich Console to print to (module-level default).
+    """
     checks = result.get("checks", {})
     table = Table(title=title)
     table.add_column("Check", style="cyan")
@@ -24,6 +52,7 @@ def _render_checks_table(title: str, result: dict, console: Console = console):
         if isinstance(check_value, dict):
             value = ", ".join(f"{k}: {v}" for k, v in check_value.items())
         elif isinstance(check_value, list):
+            # Show at most three items; append a overflow indicator.
             value = ", ".join(str(v) for v in check_value[:3])
             if len(check_value) > 3:
                 value += f" (+{len(check_value) - 3} more)"
@@ -107,7 +136,12 @@ def user(username: str, json: bool = typer.Option(False, "--json", help="Output 
 
 @app.command("all")
 def enrich_all(target: str, json: bool = typer.Option(False, "--json", help="Output as JSON")):
-    """Auto-detect and enrich any IOC (IP, domain, hash, or user)."""
+    """Auto-detect and enrich any IOC (IP, domain, hash, or user).
+
+    Uses ``utils.detect_ioc_type`` to classify the input, then
+    dispatches to the appropriate enrichment function.  URLs are
+    handled by extracting IOCs from the URL text itself.
+    """
     from pipeline import enrich_target
 
     target_type = detect_ioc_type(target)

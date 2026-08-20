@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Automated IOC extraction from alerts."""
+"""Automated IOC (Indicator of Compromise) extraction from alert text.
+
+Scans free-form alert descriptions or log files and pulls out structured
+IOC types: IPv4 addresses, domains, file hashes (MD5/SHA-1/SHA-256),
+URLs, email addresses, file paths (Windows and Unix), and user-account
+identifiers.
+
+Design notes:
+    - All extractors use ``re.findall`` with ``set()`` deduplication to
+      avoid reporting the same indicator twice.
+    - Regex patterns are deliberately conservative to minimise false
+      positives — they validate structure (e.g. IPv4 octet ranges)
+      rather than merely matching character classes.
+    - Hash detection is ordered by length so that shorter hashes embedded
+      inside longer ones do not cause false matches (the ``\b`` word
+      boundary anchors help, but ordering adds safety).
+"""
 
 import argparse
 import json
@@ -8,7 +24,16 @@ from typing import List
 
 
 def extract_iocs(alert_text: str) -> dict:
-    """Extract IOCs from alert text."""
+    """Extract every supported IOC type from *alert_text*.
+
+    Args:
+        alert_text: Free-form text (alert body, log snippet, etc.).
+
+    Returns:
+        A dict mapping each IOC type (``ips``, ``domains``, ``hashes``,
+        ``urls``, ``emails``, ``filepaths``, ``accounts``) to its
+        extracted values.
+    """
     extracted = {
         "ips": [],
         "domains": [],
@@ -31,19 +56,37 @@ def extract_iocs(alert_text: str) -> dict:
 
 
 def extract_ips(text: str) -> List[str]:
-    """Extract IP addresses."""
+    """Extract valid IPv4 addresses from *text*.
+
+    The pattern validates each octet is in the 0–255 range and uses
+    ``\b`` word boundaries to avoid matching substrings of longer
+    numbers or hostnames.
+    """
     ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
     return list(set(re.findall(ipv4_pattern, text)))
 
 
 def extract_domains(text: str) -> List[str]:
-    """Extract domain names."""
+    """Extract domain names from *text*.
+
+    Matches labels conforming to RFC 1035 (alphanumeric + hyphens,
+    max 63 chars per label) followed by a recognised TLD from a
+    curated suffix list.  The list can be extended as needed.
+    """
     domain_pattern = r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+(?:com|net|org|io|xyz|top|pw|tk|ml|ga|cf|gq|info|biz|me|co|ru|cn|in|au|uk|de|fr|jp|br)\b"
     return list(set(re.findall(domain_pattern, text)))
 
 
 def extract_hashes(text: str) -> dict:
-    """Extract file hashes."""
+    """Extract file hashes from *text*, grouped by algorithm.
+
+    Detects three common hash lengths:
+        - 32 hex chars → MD5
+        - 40 hex chars → SHA-1
+        - 64 hex chars → SHA-256
+
+    Each sub-list is deduplicated via ``set()``.
+    """
     hashes = {"md5": [], "sha1": [], "sha256": []}
 
     md5_pattern = r"\b[a-fA-F0-9]{32}\b"
@@ -58,19 +101,35 @@ def extract_hashes(text: str) -> dict:
 
 
 def extract_urls(text: str) -> List[str]:
-    """Extract URLs."""
+    """Extract HTTP/HTTPS URLs from *text*.
+
+    Uses a broad exclusion set for characters that are invalid inside
+    a URL path/query but may appear in surrounding prose (quotes,
+    angle brackets, backslashes, etc.).
+    """
     url_pattern = r"https?://[^\s<>'\"{}|\\^`\[\]]+"
     return list(set(re.findall(url_pattern, text)))
 
 
 def extract_emails(text: str) -> List[str]:
-    """Extract email addresses."""
+    """Extract email addresses from *text*.
+
+    Matches the local-part, ``@`` sign, and a domain with at least a
+    two-character TLD.  Intentionally does not match addresses inside
+    angle brackets or quoted strings to reduce noise.
+    """
     email_pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
     return list(set(re.findall(email_pattern, text)))
 
 
 def extract_filepaths(text: str) -> List[str]:
-    """Extract file paths."""
+    """Extract Windows and Unix file paths from *text*.
+
+    Windows paths start with a drive letter (``C:\\…``).
+    Unix paths are anchored to well-known directories (``/home/``,
+    ``/var/``, ``/etc/``, ``/usr/``, ``/tmp/``) to limit false
+    positives.
+    """
     windows_pattern = r"[A-Za-z]:(?:\\[^\s<>'\"{}|\\^`\[\]]+)+"
     unix_pattern = r"(?:/home/|/var/|/etc/|/usr/|/tmp/)[^\s<>'\"{}|\\^`\[\]]+"
 
@@ -81,7 +140,15 @@ def extract_filepaths(text: str) -> List[str]:
 
 
 def extract_accounts(text: str) -> List[str]:
-    """Extract user accounts."""
+    """Extract user-account identifiers from *text*.
+
+    Uses three complementary patterns:
+        1. ``user: / username: / account:`` field-value pairs (common
+           in structured alert fields).
+        2. UNC-style paths ``\\\\server\\user`` (Windows logon events).
+        3. Home-directory paths ``/home/user`` or ``/Users/user``
+           (Unix log entries).
+    """
     patterns = [
         r"(?:user|username|account):\s*([^\s<>'\"{}|\\^`\[\]]+)",
         r"\\\\([A-Za-z0-9_.\\]+)",
@@ -112,6 +179,7 @@ def main():
         return
 
     result = extract_iocs(text)
+    # Build a summary count for each IOC type.
     result["count"] = {
         "ips": len(result["ips"]),
         "domains": len(result["domains"]),
