@@ -1,0 +1,154 @@
+name: alertflow
+
+services:
+  # ── Kafka (KRaft mode, no Zookeeper) ──────────────────────────
+  kafka:
+    image: soldevelo/kafka:3.9.0
+    container_name: alertflow-kafka
+    hostname: kafka
+    environment:
+      # KRaft mode — single node, no Zookeeper
+      KAFKA_KRAFT_CLUSTER_ID: "alertflow-kraft-cluster"
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      # Listeners — single PLAINTEXT listener for Docker network
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # Topic auto-creation
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Log retention
+      KAFKA_CFG_LOG_RETENTION_HOURS: "168"
+      KAFKA_CFG_LOG_SEGMENT_BYTES: "1073741824"
+    volumes:
+      - kafka-data:/bitnami/kafka
+    # No host port binding — Kafka is internal to Docker network only
+    networks:
+      - alertflow-net
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── AlertFlow API + Kafka Consumer ────────────────────────────
+  alertflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alertflow-api
+    hostname: alertflow
+    environment:
+      # Database
+      ALERTFLOW_DB: /data/alertflow.db
+      # Kafka
+      ALERTFLOW_KAFKA_ENABLED: "true"
+      KAFKA_BROKER: kafka:9092
+      ALERTFLOW_KAFKA_TOPIC: logsentry-to-alertflow
+      ALERTFLOW_KAFKA_GROUP: alertflow-consumers
+      # ThreatPulse integration (reachable via threat-pulse-net)
+      THREATPULSE_URL: http://threat-pulse-frontend-1:8000
+      THREATPULSE_API_KEY: ""
+      # Splunk HEC (reachable via splunk_default)
+      SPLUNK_HEC_URL: http://splunk:8088
+      SPLUNK_HEC_TOKEN: ""
+      # Auth
+      ALERTFLOW_AUTH_ENABLED: "false"
+      ALERTFLOW_API_KEY: ""
+      # Logging
+      ALERTFLOW_LOG_LEVEL: INFO
+    volumes:
+      - alertflow-data:/data
+    ports:
+      - "8082:8000"    # AlertFlow API (LAN access)
+    networks:
+      - alertflow-net
+      - threat-pulse-net
+      - splunk_default
+      - proxy-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    labels:
+      # 4rch3.io portal discovery
+      - "4rch3.io.enable=true"
+      - "4rch3.io.service=alertflow"
+      - "4rch3.io.name=AlertFlow"
+      - "4rch3.io.description=SOC alert triage pipeline — enrichment, Kafka, ThreatPulse"
+      - "4rch3.io.url=https://alertflow.4rch3.io"
+      - "4rch3.io.health=/api/health"
+      - "4rch3.io.port=8000"
+      - "4rch3.io.public=true"
+      - "4rch3.io.category=security"
+      # Traefik routing
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
+      - "traefik.http.routers.alertflow.rule=Host(`alertflow.4rch3.io`)"
+      - "traefik.http.routers.alertflow.entrypoints=websecure"
+      - "traefik.http.routers.alertflow.tls=true"
+      - "traefik.http.routers.alertflow.tls.certresolver=cloudflare"
+      - "traefik.http.routers.alertflow.middlewares=security-headers@file,cf-access-auth@file"
+      - "traefik.http.services.alertflow.loadbalancer.server.port=8000"
+
+  # ── Kafka UI (Provectus) ──────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: alertflow-kafka-ui
+    hostname: kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: alertflow
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_READONLY: "false"
+    networks:
+      - alertflow-net
+      - proxy-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    labels:
+      # 4rch3.io portal discovery
+      - "4rch3.io.enable=true"
+      - "4rch3.io.service=kafka-ui"
+      - "4rch3.io.name=Kafka UI"
+      - "4rch3.io.description=Kafka topic and consumer group browser"
+      - "4rch3.io.url=https://kafka.4rch3.io"
+      - "4rch3.io.health=/actuator/health"
+      - "4rch3.io.port=8080"
+      - "4rch3.io.public=true"
+      - "4rch3.io.category=security"
+      # Traefik routing
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
+      - "traefik.http.routers.kafka-ui.rule=Host(`kafka.4rch3.io`)"
+      - "traefik.http.routers.kafka-ui.entrypoints=websecure"
+      - "traefik.http.routers.kafka-ui.tls=true"
+      - "traefik.http.routers.kafka-ui.tls.certresolver=cloudflare"
+      - "traefik.http.routers.kafka-ui.middlewares=security-headers@file,cf-access-auth@file"
+      - "traefik.http.services.kafka-ui.loadbalancer.server.port=8080"
+
+volumes:
+  kafka-data:
+  alertflow-data:
+
+networks:
+  alertflow-net:
+    driver: bridge
+  threat-pulse-net:
+    external: true
+  splunk_default:
+    external: true
+  proxy-net:
+    external: true

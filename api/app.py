@@ -28,6 +28,7 @@ from api.deps import get_store
 from api.health import health, set_start_time
 from api.routes import router as alerts_router
 from api.enrich import router as enrich_router
+from api.web import router as web_router
 from auth import create_api_key_auth_middleware
 from kafka_consumer import run_kafka_consumer
 from logging_config import RequestLoggingMiddleware, setup_logging
@@ -156,9 +157,11 @@ app.add_middleware(RequestLoggingMiddleware)
 # include_in_schema=False keeps the metrics endpoint out of OpenAPI docs.
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
-# Mount the core alert CRUD router and the enrichment sub-router.
+# Mount the core alert CRUD router, the enrichment sub-router, and the
+# read-only web dashboard.
 app.include_router(alerts_router)
 app.include_router(enrich_router)
+app.include_router(web_router)
 
 
 @app.middleware("http")

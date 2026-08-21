@@ -81,9 +81,12 @@ def _check_api_key(request: Request) -> bool:
         return True
 
     # Exempt infrastructure endpoints — monitoring probes and API docs
-    # must work without credentials.
+    # must work without credentials. The web dashboard ("/" and its
+    # partial-refresh endpoints) is read-only and also exempt.
     path = request.url.path
     if path in ("/api/health", "/metrics", "/docs", "/openapi.json", "/redoc"):
+        return True
+    if path == "/" or path.startswith("/partials/"):
         return True
 
     # CORS preflight must not be blocked by auth.

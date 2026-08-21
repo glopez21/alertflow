@@ -304,15 +304,26 @@ class AlertStore:
                 alert = session.get(AlertRow, alert_id)
                 return _row_to_dict(alert) if alert else None
 
-    def list_alerts(self, status: Optional[str] = None, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
+    def list_alerts(
+        self,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        search: str = "",
+        order: str = "asc",
+    ) -> tuple[list[dict], int]:
         """List alerts with optional status filter, pagination, and total count.
 
-        Results are ordered by ascending ``id`` (creation order).
+        Results are ordered by ``id`` per the *order* argument (default
+        ascending creation order).
 
         Args:
             status: If provided, only return alerts matching this status.
             limit: Maximum number of alerts to return (page size).
             offset: Number of alerts to skip (for pagination).
+            search: Optional case-insensitive substring matched against
+                title, IOC, and source fields.
+            order: ``"asc"`` (default) or ``"desc"`` ordering by id.
 
         Returns:
             A ``(alerts, total)`` tuple where *alerts* is the page of alert
@@ -321,7 +332,7 @@ class AlertStore:
         """
         with self._lock:
             with self._session() as session:
-                from sqlalchemy import select, func
+                from sqlalchemy import select, func, or_
 
                 stmt = select(AlertRow)
                 count_stmt = select(func.count(AlertRow.id))
@@ -330,11 +341,53 @@ class AlertStore:
                     stmt = stmt.where(AlertRow.status == status)
                     count_stmt = count_stmt.where(AlertRow.status == status)
 
+                if search:
+                    pattern = f"%{search}%"
+                    cond = or_(
+                        AlertRow.title.ilike(pattern),
+                        AlertRow.ioc.ilike(pattern),
+                        AlertRow.source.ilike(pattern),
+                    )
+                    stmt = stmt.where(cond)
+                    count_stmt = count_stmt.where(cond)
+
                 # Compute total count before applying LIMIT/OFFSET.
                 total = session.scalar(count_stmt)
-                stmt = stmt.order_by(AlertRow.id).limit(limit).offset(offset)
+                order_col = AlertRow.id.desc() if order == "desc" else AlertRow.id.asc()
+                stmt = stmt.order_by(order_col).limit(limit).offset(offset)
                 rows = session.scalars(stmt).all()
                 return [_row_to_dict(r) for r in rows], total
+
+    def stats(self) -> dict:
+        """Return aggregate counts grouped by status and severity.
+
+        Used by the web dashboard to render summary cards without
+        transferring every alert row.
+
+        Returns:
+            Dict with ``total``, ``by_status``, and ``by_severity`` maps.
+        """
+        with self._lock:
+            with self._session() as session:
+                from sqlalchemy import select, func
+
+                by_status = {
+                    status: cnt
+                    for status, cnt in session.execute(
+                        select(AlertRow.status, func.count(AlertRow.id)).group_by(AlertRow.status)
+                    )
+                }
+                by_severity = {
+                    severity: cnt
+                    for severity, cnt in session.execute(
+                        select(AlertRow.severity, func.count(AlertRow.id)).group_by(AlertRow.severity)
+                    )
+                }
+                return {
+                    "total": sum(by_status.values()),
+                    "by_status": by_status,
+                    "by_severity": by_severity,
+                }
 
     def add_note(self, alert_id: int, note: str, analyst: str = "") -> Optional[dict]:
         """Append a timestamped analyst note to an alert.
